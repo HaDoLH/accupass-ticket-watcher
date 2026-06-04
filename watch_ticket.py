@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Accupass 票券監看腳本（雲端排程版）
+Accupass 票券監看腳本（雲端排程版 · 特定場次精準監看）
+
+這版會「點進訂票頁、切到指定日期、只盯你要的那幾個場次」，
+其中任何一個從『已售完』釋出名額時，就用 Discord Webhook 推播到手機。
 
 設計重點（給之後回來看的自己）：
-- Accupass 是 JavaScript 動態渲染的網站，原始 HTML 抓不到真實票況，
-  所以這裡用 Playwright「無頭瀏覽器」把頁面跑完，再讀「畫面上看得到的文字」來判斷。
-- 這支腳本「跑一次就結束」。每隔幾分鐘重跑的工作交給 GitHub Actions 的 cron，
-  腳本本身不需要 while 迴圈或 Ctrl+C 處理。
-- 有票時用 Discord Webhook 把通知推到手機。
+- Accupass 是 JavaScript 動態渲染網站，原始 HTML 抓不到真實票況，
+  所以用 Playwright「無頭瀏覽器」把頁面跑完，再讀畫面真實狀態。
+- 真正選「日期＋場次」是在訂票頁 /eflow/ticket/<活動ID>，不是活動主頁。
+- 訂票頁每個場次是一張卡片：售完時名稱會帶 sold-out 標記、且顯示「已售完」。
+  → 判斷有票 = 該場次「沒有」售完標記也「沒有」已售完文字。
+- 這支腳本「跑一次就結束」。每隔幾分鐘重跑交給 GitHub Actions 的 cron。
 """
 
 import os
@@ -19,79 +23,122 @@ from datetime import datetime, timezone, timedelta
 from playwright.sync_api import sync_playwright
 
 # 把輸出強制設成 UTF-8，避免 Windows 終端機（預設 cp950）印中文/emoji 時崩潰。
-# errors="replace" 代表萬一還是無法顯示，就用替代字元帶過、不要中斷程式。
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
-# ── 設定區 ──────────────────────────────────────────────
-# 要監看的活動頁網址
-TARGET_URL = "https://www.accupass.com/event/2605080529051188996723"
+# ── 設定區（要改監看目標就改這裡）──────────────────────────
+# 活動 ID（就是活動網址最後那串數字）
+EVENT_ID = "2605080529051188996723"
+
+# 訂票頁網址（選日期＋場次的那一頁）
+TICKET_URL = f"https://www.accupass.com/eflow/ticket/{EVENT_ID}"
+
+# 要監看的「日期」：TARGET_DAY 是日曆上要點的號數，
+# TARGET_DATE_FRAGMENT 用來事後核對日期框真的切對了（格式同頁面：YYYY / MM / DD）。
+TARGET_DAY = 13
+TARGET_DATE_FRAGMENT = "2026 / 06 / 13"
+
+# 要監看的「場次時段」：清單裡任一個釋出名額就通知。
+TARGET_SESSIONS = ["19:40-20:20", "20:30-21:10", "21:20-22:00"]
 
 # Discord Webhook 網址，從環境變數讀（雲端放 GitHub Secret，本機測試可不設）
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 
-# 台灣時區（UTC+8），讓印出的時間戳記是台灣時間
+# 台灣時區（UTC+8）
 TW_TZ = timezone(timedelta(hours=8))
 
-# 「可以買」的按鈕字樣：頁面可見文字裡只要出現其中任一個，就視為有票可報名。
-# 列多個變體是因為 Accupass 不同活動的按鈕字樣可能不同，多列幾個比較保險。
-BUYABLE_KEYWORDS = ["立即報名", "我要報名", "立即購票", "我要購票", "馬上報名", "報名參加"]
-
-# 「不算有票」的狀態字樣：純粹用來在 log 裡顯示頁面目前有哪些狀態，方便除錯。
-STATUS_KEYWORDS = ["已售完", "售完", "已截止", "報名截止", "即將開賣", "尚未開賣", "暫停"]
+# 一個正常瀏覽器的 UA，降低被當機器人的機會
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
 def now_str() -> str:
-    """回傳台灣時間的字串，例如 2026-06-04 15:30:12 (UTC+8)"""
+    """台灣時間字串，例如 2026-06-04 15:30:12 (UTC+8)"""
     return datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
 
 
-def fetch_visible_text() -> str:
+# 在瀏覽器裡執行的 JS：把日曆上「當月、未停用」的指定號數點下去
+JS_CLICK_DAY = """(day) => {
+    for (const el of document.querySelectorAll('[class*=calendar-date]')) {
+        const t = (el.textContent || '').trim();
+        const c = el.className || '';
+        if (t === String(day) && !c.includes('is-not-this-month') && !c.includes('disabled')) {
+            el.click();
+            return true;
+        }
+    }
+    return false;  // 找不到可點的（可能該日不開放或已過期）
+}"""
+
+# 在瀏覽器裡執行的 JS：讀出每個場次的「時段名稱」與「是否售完」
+JS_READ_SESSIONS = """() => {
+    const out = [];
+    document.querySelectorAll('p[class*=-name]').forEach(nameEl => {
+        const name = nameEl.textContent.trim();
+        if (!/\\d{2}:\\d{2}-\\d{2}:\\d{2}/.test(name)) return;  // 只取含時段的場次名稱
+        // 售完判斷一：名稱元素帶 sold-out 標記
+        const soldByClass = /sold-out/.test(nameEl.className);
+        // 售完判斷二：往上找卡片，看有沒有顯示「已售完」的狀態元素
+        let statusText = '';
+        let n = nameEl;
+        for (let i = 0; i < 5 && n; i++) {
+            n = n.parentElement;
+            if (!n) break;
+            const s = n.querySelector('[class*=ticket-selling-status]');
+            if (s) { statusText = s.textContent.trim(); break; }
+        }
+        const soldByText = statusText.includes('售完');
+        out.push({ name, soldOut: soldByClass || soldByText, statusText });
+    });
+    return out;
+}"""
+
+
+def check_sessions():
     """
-    用無頭瀏覽器打開頁面、等 JS 跑完，回傳「畫面上看得到的文字」。
-    這段文字不含 <script> 裡的 i18n 翻譯字典，所以關鍵字判斷才乾淨可靠。
+    打開訂票頁、切到目標日期、讀目標場次狀態。
+    回傳 (date_value, results)；results 是 [{name, soldOut, statusText}, ...]。
+    date_value 是日期框最後顯示的值，用來核對日期切對沒。
     """
     with sync_playwright() as p:
-        # headless=True 代表背景執行、不開視窗
         browser = p.chromium.launch(headless=True)
-        # 帶一個正常的瀏覽器 UA，減少被當成機器人的機會
-        page = browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0 Safari/537.36"
-            )
-        )
-        # 進到頁面，等到網路大致閒置（JS 載完）；最多等 60 秒
-        page.goto(TARGET_URL, wait_until="networkidle", timeout=60_000)
-        # 再多給一點時間讓票券區塊渲染出來
-        page.wait_for_timeout(3_000)
-        text = page.inner_text("body")
+        page = browser.new_page(user_agent=UA)
+        page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
+        page.wait_for_timeout(4_000)  # 等場次卡片渲染
+
+        # 1) 點開日期輸入框（用 JS 點，避免被 sticky 標題列擋住）
+        page.eval_on_selector("input[class*=calendar-input]", "el => el.click()")
+        page.wait_for_timeout(1_500)
+
+        # 2) 在日曆上點目標號數
+        clicked = page.evaluate(JS_CLICK_DAY, TARGET_DAY)
+        page.wait_for_timeout(3_500)  # 等切換日期後場次重新載入
+
+        # 3) 讀日期框現在的值，待會核對
+        try:
+            date_value = page.eval_on_selector("input[class*=calendar-input]", "el => el.value")
+        except Exception:
+            date_value = ""
+
+        # 4) 讀所有場次狀態
+        results = page.evaluate(JS_READ_SESSIONS)
+
         browser.close()
-        return text
+        return date_value, results, clicked
 
 
-def analyze(text: str):
-    """
-    分析可見文字，回傳 (是否有票, 找到的可買關鍵字清單, 找到的狀態字清單)。
-    判斷規則：可見文字含任一個「可以買」的按鈕字樣 → 有票。
-    """
-    found_buyable = [k for k in BUYABLE_KEYWORDS if k in text]
-    found_status = [k for k in STATUS_KEYWORDS if k in text]
-    has_ticket = len(found_buyable) > 0
-    return has_ticket, found_buyable, found_status
-
-
-def notify_discord(found_buyable) -> None:
-    """把「有票了！」推播到 Discord。沒設定 Webhook 就只在 terminal 提醒。"""
+def notify_discord(opened_sessions) -> None:
+    """把『釋出名額』推播到 Discord。沒設 Webhook 就只在 terminal 印出。"""
+    sessions_text = "\n".join(f"・{s}" for s in opened_sessions)
     message = (
-        "🎫 **有票了！Accupass 偵測到可報名的票券**\n"
-        f"偵測到的按鈕：{ '、'.join(found_buyable) }\n"
-        f"時間：{ now_str() }\n"
-        f"快去搶 👉 {TARGET_URL}"
+        "🎫 **釋出名額了！SUPER JUNIOR SJ MARKET**\n"
+        f"日期：2026/06/13（六）\n"
+        f"以下場次目前可報名：\n{sessions_text}\n"
+        f"時間：{now_str()}\n"
+        f"快去搶 👉 {TICKET_URL}"
     )
 
     if not DISCORD_WEBHOOK_URL:
@@ -111,32 +158,49 @@ def notify_discord(found_buyable) -> None:
         },
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        # Discord 成功會回 204 No Content
         print(f"✅ 已送出 Discord 通知（HTTP {resp.status}）")
 
 
 def main() -> int:
-    print(f"[{now_str()}] 開始檢查：{TARGET_URL}")
+    print(f"[{now_str()}] 開始檢查：{TICKET_URL}")
+    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(TARGET_SESSIONS) }")
     try:
-        text = fetch_visible_text()
+        date_value, results, clicked = check_sessions()
     except Exception as e:
         # 網路錯誤、渲染逾時等都接住，印出原因後正常結束（交給 cron 下一輪重試）
         print(f"[{now_str()}] ⚠️ 抓取失敗：{type(e).__name__}: {e}")
         return 0
 
-    has_ticket, found_buyable, found_status = analyze(text)
+    # 核對日期有沒有切對；沒切對就不做判斷（避免拿錯日期誤報）
+    if TARGET_DATE_FRAGMENT not in (date_value or ""):
+        print(f"[{now_str()}] ⚠️ 日期沒切到 6/13（目前顯示「{date_value}」, 點到日期={clicked}），"
+              f"這輪先跳過，等下一輪重試。")
+        return 0
 
-    status_desc = "、".join(found_status) if found_status else "（無）"
-    print(f"[{now_str()}] 頁面狀態字：{status_desc}")
+    # 把目標場次的狀態整理出來
+    opened = []          # 已釋出（可報名）的目標場次
+    summary = []         # 給 log 看的整體狀態
+    for sess in TARGET_SESSIONS:
+        hit = next((r for r in results if sess in r["name"]), None)
+        if hit is None:
+            summary.append(f"{sess}=找不到")
+            continue
+        if hit["soldOut"]:
+            summary.append(f"{sess}=已售完")
+        else:
+            summary.append(f"{sess}=★可報名★")
+            opened.append(sess)
 
-    if has_ticket:
-        print(f"[{now_str()}] 🟢 有票！偵測到按鈕：{ '、'.join(found_buyable) }")
+    print(f"[{now_str()}] 日期：{date_value}｜場次狀態：{ '、'.join(summary) }")
+
+    if opened:
+        print(f"[{now_str()}] 🟢 有場次釋出名額：{ '、'.join(opened) }")
         try:
-            notify_discord(found_buyable)
+            notify_discord(opened)
         except Exception as e:
             print(f"[{now_str()}] ⚠️ Discord 推播失敗：{type(e).__name__}: {e}")
     else:
-        print(f"[{now_str()}] ⚪ 目前沒有可報名的票，繼續監看。")
+        print(f"[{now_str()}] ⚪ 三個場次目前都還是已售完，繼續監看。")
 
     return 0
 
