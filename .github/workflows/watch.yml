@@ -1,0 +1,35 @@
+name: Accupass 票券監看
+
+# 觸發時機
+on:
+  schedule:
+    # 每 5 分鐘跑一次（GitHub 排程最短就是 5 分鐘，尖峰時偶爾會延遲幾分鐘）
+    - cron: "*/5 * * * *"
+  # 也可以到 Actions 分頁手動按「Run workflow」立即測試
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 把 repo 的程式碼抓下來
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      # 2. 準備 Python 環境
+      - name: 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 3. 安裝相依套件 + 下載瀏覽器核心
+      - name: 安裝套件與瀏覽器
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      # 4. 執行監看腳本（DISCORD_WEBHOOK_URL 從 GitHub Secret 帶進來）
+      - name: 執行票券監看
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python watch_ticket.py

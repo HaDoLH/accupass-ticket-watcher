@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本機可能用到的祕密檔（絕對不要進 git）
+.env
