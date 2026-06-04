@@ -183,7 +183,7 @@ def notify_discord(opened_sessions) -> None:
     """把『釋出名額』推播到 Discord。"""
     sessions_text = "\n".join(f"・{label_of(s)}" for s in opened_sessions)
     message = (
-        "🎫 **釋出名額了！SUPER JUNIOR SJ MARKET**\n"
+        "🎫 釋出名額了！SUPER JUNIOR SJ MARKET\n"
         f"日期：2026/06/13（六）\n"
         f"以下場次目前可報名：\n{sessions_text}\n"
         f"時間：{now_str()}\n"
@@ -195,7 +195,7 @@ def notify_discord(opened_sessions) -> None:
 def send_test_notification() -> None:
     """測試模式：送一則測試訊息，確認手機收得到推播。"""
     message = (
-        "🔔 **這是一則測試通知**\n"
+        "🔔 這是一則測試通知\n"
         "如果你在手機看到這則，代表 Accupass 票券監看的推播管道正常 👍\n"
         f"監看中：6/13 第11/12/13場次（19:40 / 20:30 / 21:20）\n"
         f"時間：{now_str()}"
