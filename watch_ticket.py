@@ -70,6 +70,10 @@ def label_of(sess: str) -> str:
 # Discord Webhook 網址，從環境變數讀（雲端放 GitHub Secret，本機測試可不設）
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 
+# 測試模式：環境變數 FORCE_TEST=true 時，強制送一則測試通知後就結束，
+# 用來確認「Discord → 手機」這條推播路徑是通的（不管票況）。
+FORCE_TEST = os.environ.get("FORCE_TEST", "").strip().lower() in ("1", "true", "yes")
+
 # 台灣時區（UTC+8）
 TW_TZ = timezone(timedelta(hours=8))
 
@@ -153,17 +157,8 @@ def check_sessions():
         return date_value, results, clicked
 
 
-def notify_discord(opened_sessions) -> None:
-    """把『釋出名額』推播到 Discord。沒設 Webhook 就只在 terminal 印出。"""
-    sessions_text = "\n".join(f"・{label_of(s)}" for s in opened_sessions)
-    message = (
-        "🎫 **釋出名額了！SUPER JUNIOR SJ MARKET**\n"
-        f"日期：2026/06/13（六）\n"
-        f"以下場次目前可報名：\n{sessions_text}\n"
-        f"時間：{now_str()}\n"
-        f"快去搶 👉 {TICKET_URL}"
-    )
-
+def _post_discord(message: str) -> None:
+    """實際把一則訊息送到 Discord Webhook。沒設 Webhook 就只在 terminal 印出。"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️  尚未設定 DISCORD_WEBHOOK_URL，略過手機推播（以下為原本要送出的訊息）：")
         print(message)
@@ -184,7 +179,40 @@ def notify_discord(opened_sessions) -> None:
         print(f"✅ 已送出 Discord 通知（HTTP {resp.status}）")
 
 
+def notify_discord(opened_sessions) -> None:
+    """把『釋出名額』推播到 Discord。"""
+    sessions_text = "\n".join(f"・{label_of(s)}" for s in opened_sessions)
+    message = (
+        "🎫 **釋出名額了！SUPER JUNIOR SJ MARKET**\n"
+        f"日期：2026/06/13（六）\n"
+        f"以下場次目前可報名：\n{sessions_text}\n"
+        f"時間：{now_str()}\n"
+        f"快去搶 👉 {TICKET_URL}"
+    )
+    _post_discord(message)
+
+
+def send_test_notification() -> None:
+    """測試模式：送一則測試訊息，確認手機收得到推播。"""
+    message = (
+        "🔔 **這是一則測試通知**\n"
+        "如果你在手機看到這則，代表 Accupass 票券監看的推播管道正常 👍\n"
+        f"監看中：6/13 第11/12/13場次（19:40 / 20:30 / 21:20）\n"
+        f"時間：{now_str()}"
+    )
+    print(f"[{now_str()}] 🧪 測試模式：送出測試通知")
+    _post_discord(message)
+
+
 def main() -> int:
+    # 測試模式：直接送一則測試通知就結束，不去抓票況
+    if FORCE_TEST:
+        try:
+            send_test_notification()
+        except Exception as e:
+            print(f"[{now_str()}] ⚠️ 測試通知送出失敗：{type(e).__name__}: {e}")
+        return 0
+
     print(f"[{now_str()}] 開始檢查：{TICKET_URL}")
     print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in TARGET_SESSIONS) }")
     try:

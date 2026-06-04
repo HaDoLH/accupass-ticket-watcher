@@ -7,6 +7,11 @@ on:
     - cron: "*/5 * * * *"
   # 也可以到 Actions 分頁手動按「Run workflow」立即測試
   workflow_dispatch:
+    inputs:
+      force_test:
+        description: "送一則測試通知到 Discord（確認手機收得到，不檢查票況）"
+        type: boolean
+        default: false
 
 jobs:
   check:
@@ -32,4 +37,6 @@ jobs:
       - name: 執行票券監看
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # 手動觸發時若勾選 force_test，就送測試通知（排程自動跑時為空、照常檢查票況）
+          FORCE_TEST: ${{ inputs.force_test }}
         run: python watch_ticket.py
