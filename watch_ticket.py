@@ -103,7 +103,12 @@ def notify_discord(found_buyable) -> None:
     req = urllib.request.Request(
         DISCORD_WEBHOOK_URL,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # Discord（前面的 Cloudflare）會擋掉沒有正常 User-Agent 的請求（回 403），
+            # 所以一定要帶一個 UA，否則推播會失敗。
+            "User-Agent": "AccupassTicketWatcher/1.0 (+https://github.com/HaDoLH/accupass-ticket-watcher)",
+        },
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         # Discord 成功會回 204 No Content
