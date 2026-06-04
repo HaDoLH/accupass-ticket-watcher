@@ -44,6 +44,29 @@ TARGET_DATE_FRAGMENT = "2026 / 06 / 13"
 # 要監看的「場次時段」：清單裡任一個釋出名額就通知。
 TARGET_SESSIONS = ["19:40-20:20", "20:30-21:10", "21:20-22:00"]
 
+# 完整場次時間表（時段 → 第幾場次），用來在通知與 log 裡標明場次編號。
+SESSION_LABELS = {
+    "11:00-11:40": "第1場次",
+    "11:50-12:30": "第2場次",
+    "12:40-13:20": "第3場次",
+    "13:30-14:10": "第4場次",
+    "14:20-15:00": "第5場次",
+    "15:10-15:50": "第6場次",
+    "16:00-16:40": "第7場次",
+    "16:50-17:30": "第8場次",
+    "18:00-18:40": "第9場次",
+    "18:50-19:30": "第10場次",
+    "19:40-20:20": "第11場次",
+    "20:30-21:10": "第12場次",
+    "21:20-22:00": "第13場次",
+}
+
+
+def label_of(sess: str) -> str:
+    """把時段轉成『第N場次（時段）』；對照表沒有的就只顯示時段。"""
+    name = SESSION_LABELS.get(sess)
+    return f"{name}（{sess}）" if name else sess
+
 # Discord Webhook 網址，從環境變數讀（雲端放 GitHub Secret，本機測試可不設）
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 
@@ -132,7 +155,7 @@ def check_sessions():
 
 def notify_discord(opened_sessions) -> None:
     """把『釋出名額』推播到 Discord。沒設 Webhook 就只在 terminal 印出。"""
-    sessions_text = "\n".join(f"・{s}" for s in opened_sessions)
+    sessions_text = "\n".join(f"・{label_of(s)}" for s in opened_sessions)
     message = (
         "🎫 **釋出名額了！SUPER JUNIOR SJ MARKET**\n"
         f"日期：2026/06/13（六）\n"
@@ -163,7 +186,7 @@ def notify_discord(opened_sessions) -> None:
 
 def main() -> int:
     print(f"[{now_str()}] 開始檢查：{TICKET_URL}")
-    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(TARGET_SESSIONS) }")
+    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in TARGET_SESSIONS) }")
     try:
         date_value, results, clicked = check_sessions()
     except Exception as e:
@@ -186,15 +209,16 @@ def main() -> int:
             summary.append(f"{sess}=找不到")
             continue
         if hit["soldOut"]:
-            summary.append(f"{sess}=已售完")
+            summary.append(f"{label_of(sess)}=已售完")
         else:
-            summary.append(f"{sess}=★可報名★")
+            summary.append(f"{label_of(sess)}=★可報名★")
             opened.append(sess)
 
     print(f"[{now_str()}] 日期：{date_value}｜場次狀態：{ '、'.join(summary) }")
 
     if opened:
-        print(f"[{now_str()}] 🟢 有場次釋出名額：{ '、'.join(opened) }")
+        opened_labels = "、".join(label_of(s) for s in opened)
+        print(f"[{now_str()}] 🟢 有場次釋出名額：{opened_labels}")
         try:
             notify_discord(opened)
         except Exception as e:
