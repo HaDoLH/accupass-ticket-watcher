@@ -17,6 +17,7 @@ Accupass 票券監看腳本（雲端排程版 · 特定場次精準監看）
 import os
 import sys
 import json
+import time
 import urllib.request
 from datetime import datetime, timezone, timedelta
 
@@ -41,9 +42,6 @@ TICKET_URL = f"https://www.accupass.com/eflow/ticket/{EVENT_ID}"
 TARGET_DAY = 13
 TARGET_DATE_FRAGMENT = "2026 / 06 / 13"
 
-# 要監看的「場次時段」：清單裡任一個釋出名額就通知。
-TARGET_SESSIONS = ["19:40-20:20", "20:30-21:10", "21:20-22:00"]
-
 # 完整場次時間表（時段 → 第幾場次），用來在通知與 log 裡標明場次編號。
 SESSION_LABELS = {
     "11:00-11:40": "第1場次",
@@ -61,6 +59,11 @@ SESSION_LABELS = {
     "21:20-22:00": "第13場次",
 }
 
+# 要監看的「場次時段」：清單裡任一個釋出名額就通知。
+# 目前監看 6/13「整天 13 個場次」（直接拿對照表的全部時段）。
+# 想只盯特定幾場，把這行改成例如 ["19:40-20:20", "20:30-21:10"] 即可。
+TARGET_SESSIONS = list(SESSION_LABELS.keys())
+
 
 def label_of(sess: str) -> str:
     """把時段轉成『第N場次（時段）』；對照表沒有的就只顯示時段。"""
@@ -73,6 +76,18 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 # 測試模式：環境變數 FORCE_TEST=true 時，強制送一則測試通知後就結束，
 # 用來確認「Discord → 手機」這條推播路徑是通的（不管票況）。
 FORCE_TEST = os.environ.get("FORCE_TEST", "").strip().lower() in ("1", "true", "yes")
+
+# Loop 模式：因為 GitHub 排程實際會被降速到數小時才跑一次，
+# 所以改成「單次執行內部自己每 N 秒檢查一圈」，連續跑最多 M 分鐘後結束（交給下一次接力）。
+# LOOP_INTERVAL_SECONDS=0 代表只跑一次就結束（本機隨手測時用）。
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+LOOP_INTERVAL_SECONDS = _int_env("LOOP_INTERVAL_SECONDS", 0)
+LOOP_MAX_MINUTES = _int_env("LOOP_MAX_MINUTES", 330)
 
 # 台灣時區（UTC+8）
 TW_TZ = timezone(timedelta(hours=8))
@@ -124,37 +139,31 @@ JS_READ_SESSIONS = """() => {
 }"""
 
 
-def check_sessions():
+def check_on_page(page):
     """
-    打開訂票頁、切到目標日期、讀目標場次狀態。
-    回傳 (date_value, results)；results 是 [{name, soldOut, statusText}, ...]。
-    date_value 是日期框最後顯示的值，用來核對日期切對沒。
+    在既有的 page 上：開訂票頁、切到目標日期、讀場次狀態。
+    回傳 (date_value, results, clicked)。讓 loop 能共用同一個瀏覽器、不用每圈重開。
     """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=UA)
-        page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
-        page.wait_for_timeout(4_000)  # 等場次卡片渲染
+    page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
+    page.wait_for_timeout(4_000)  # 等場次卡片渲染
 
-        # 1) 點開日期輸入框（用 JS 點，避免被 sticky 標題列擋住）
-        page.eval_on_selector("input[class*=calendar-input]", "el => el.click()")
-        page.wait_for_timeout(1_500)
+    # 1) 點開日期輸入框（用 JS 點，避免被 sticky 標題列擋住）
+    page.eval_on_selector("input[class*=calendar-input]", "el => el.click()")
+    page.wait_for_timeout(1_500)
 
-        # 2) 在日曆上點目標號數
-        clicked = page.evaluate(JS_CLICK_DAY, TARGET_DAY)
-        page.wait_for_timeout(3_500)  # 等切換日期後場次重新載入
+    # 2) 在日曆上點目標號數
+    clicked = page.evaluate(JS_CLICK_DAY, TARGET_DAY)
+    page.wait_for_timeout(3_500)  # 等切換日期後場次重新載入
 
-        # 3) 讀日期框現在的值，待會核對
-        try:
-            date_value = page.eval_on_selector("input[class*=calendar-input]", "el => el.value")
-        except Exception:
-            date_value = ""
+    # 3) 讀日期框現在的值，待會核對
+    try:
+        date_value = page.eval_on_selector("input[class*=calendar-input]", "el => el.value")
+    except Exception:
+        date_value = ""
 
-        # 4) 讀所有場次狀態
-        results = page.evaluate(JS_READ_SESSIONS)
-
-        browser.close()
-        return date_value, results, clicked
+    # 4) 讀所有場次狀態
+    results = page.evaluate(JS_READ_SESSIONS)
+    return date_value, results, clicked
 
 
 def _post_discord(message: str) -> None:
@@ -197,46 +206,28 @@ def send_test_notification() -> None:
     message = (
         "🔔 這是一則測試通知\n"
         "如果你在手機看到這則，代表 Accupass 票券監看的推播管道正常 👍\n"
-        f"監看中：6/13 第11/12/13場次（19:40 / 20:30 / 21:20）\n"
+        f"監看中：6/13 全部 13 個場次\n"
         f"時間：{now_str()}"
     )
     print(f"[{now_str()}] 🧪 測試模式：送出測試通知")
     _post_discord(message)
 
 
-def main() -> int:
-    # 測試模式：直接送一則測試通知就結束，不去抓票況
-    if FORCE_TEST:
-        try:
-            send_test_notification()
-        except Exception as e:
-            print(f"[{now_str()}] ⚠️ 測試通知送出失敗：{type(e).__name__}: {e}")
-        return 0
-
-    print(f"[{now_str()}] 開始檢查：{TICKET_URL}")
-    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in TARGET_SESSIONS) }")
-    try:
-        date_value, results, clicked = check_sessions()
-    except Exception as e:
-        # 網路錯誤、渲染逾時等都接住，印出原因後正常結束（交給 cron 下一輪重試）
-        print(f"[{now_str()}] ⚠️ 抓取失敗：{type(e).__name__}: {e}")
-        return 0
-
+def evaluate_and_notify(date_value, results, clicked) -> None:
+    """把一次檢查的結果整理、印出 log，並在有場次釋出時推 Discord。"""
     # 核對日期有沒有切對；沒切對就不做判斷（避免拿錯日期誤報）
     if TARGET_DATE_FRAGMENT not in (date_value or ""):
         print(f"[{now_str()}] ⚠️ 日期沒切到 6/13（目前顯示「{date_value}」, 點到日期={clicked}），"
-              f"這輪先跳過，等下一輪重試。")
-        return 0
+              f"這圈先跳過，等下一圈重試。")
+        return
 
-    # 把目標場次的狀態整理出來
     opened = []          # 已釋出（可報名）的目標場次
     summary = []         # 給 log 看的整體狀態
     for sess in TARGET_SESSIONS:
         hit = next((r for r in results if sess in r["name"]), None)
         if hit is None:
-            summary.append(f"{sess}=找不到")
-            continue
-        if hit["soldOut"]:
+            summary.append(f"{label_of(sess)}=找不到")
+        elif hit["soldOut"]:
             summary.append(f"{label_of(sess)}=已售完")
         else:
             summary.append(f"{label_of(sess)}=★可報名★")
@@ -252,7 +243,52 @@ def main() -> int:
         except Exception as e:
             print(f"[{now_str()}] ⚠️ Discord 推播失敗：{type(e).__name__}: {e}")
     else:
-        print(f"[{now_str()}] ⚪ 三個場次目前都還是已售完，繼續監看。")
+        print(f"[{now_str()}] ⚪ 目標場次目前都還是已售完，繼續監看。")
+
+
+def run_once(page) -> None:
+    """跑一圈檢查＋通知；把例外接住，確保 loop 裡單圈失敗不會中斷整個監看。"""
+    try:
+        date_value, results, clicked = check_on_page(page)
+    except Exception as e:
+        print(f"[{now_str()}] ⚠️ 抓取失敗：{type(e).__name__}: {e}")
+        return
+    evaluate_and_notify(date_value, results, clicked)
+
+
+def main() -> int:
+    # 測試模式：直接送一則測試通知就結束，不去抓票況、也不進 loop
+    if FORCE_TEST:
+        try:
+            send_test_notification()
+        except Exception as e:
+            print(f"[{now_str()}] ⚠️ 測試通知送出失敗：{type(e).__name__}: {e}")
+        return 0
+
+    looping = LOOP_INTERVAL_SECONDS > 0
+    print(f"[{now_str()}] 開始監看：{TICKET_URL}")
+    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in TARGET_SESSIONS) }")
+    if looping:
+        print(f"[{now_str()}] Loop 模式：每 {LOOP_INTERVAL_SECONDS} 秒檢查一圈，最多連續跑 {LOOP_MAX_MINUTES} 分鐘")
+
+    # 整個監看期間共用同一個瀏覽器（loop 時不用每圈重開，省時省資源）
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(user_agent=UA)
+
+        deadline = time.monotonic() + LOOP_MAX_MINUTES * 60
+        while True:
+            run_once(page)
+
+            if not looping:
+                break
+            # 算好還要不要再跑一圈（留足下一圈的間隔才繼續，否則收工交給下一次接力）
+            if time.monotonic() + LOOP_INTERVAL_SECONDS >= deadline:
+                print(f"[{now_str()}] ⏱️ 已達連續執行上限，本次結束（交給下一次排程接力）。")
+                break
+            time.sleep(LOOP_INTERVAL_SECONDS)
+
+        browser.close()
 
     return 0
 
