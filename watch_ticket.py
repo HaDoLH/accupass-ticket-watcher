@@ -163,6 +163,28 @@ JS_READ_SESSIONS = """() => {
 }"""
 
 
+# 英文月名（雲端若用英文語系，月份標題會是 "April , 2026" 這種）
+_EN_MONTHS = ["january", "february", "march", "april", "may", "june",
+              "july", "august", "september", "october", "november", "december"]
+
+
+def _parse_month_year(title: str):
+    """從日曆標題拆出 (月, 年)，同時支援中文「6月 , 2026」與英文「June , 2026」。"""
+    t = (title or "").strip()
+    y = re.search(r"(20\d{2})", t)
+    year = int(y.group(1)) if y else None
+    # 中文：「6月」
+    m = re.search(r"(\d{1,2})月", t)
+    if m:
+        return int(m.group(1)), year
+    # 英文：「June」「April」…
+    low = t.lower()
+    for i, name in enumerate(_EN_MONTHS):
+        if name in low:
+            return i + 1, year
+    return None, year
+
+
 def _navigate_to_target_month(page) -> str:
     """
     把日曆切到 TARGET_YEAR/TARGET_MONTH（必要時按上/下個月）。
@@ -171,10 +193,7 @@ def _navigate_to_target_month(page) -> str:
     last_title = ""
     for _ in range(24):  # 最多按 24 次，足夠跨好幾個月、避免萬一卡住無限迴圈
         last_title = page.evaluate(JS_READ_MONTH_TITLE) or ""
-        m = re.search(r"(\d{1,2})月", last_title)
-        y = re.search(r"(20\d{2})", last_title)
-        cur_month = int(m.group(1)) if m else None
-        cur_year = int(y.group(1)) if y else None
+        cur_month, cur_year = _parse_month_year(last_title)
 
         # 已經在目標月份就停
         if cur_month == TARGET_MONTH and cur_year == TARGET_YEAR:
@@ -332,7 +351,8 @@ def main() -> int:
     # 整個監看期間共用同一個瀏覽器（loop 時不用每圈重開，省時省資源）
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=UA)
+        # locale 設繁中：讓雲端（預設英文語系）的日曆月份標題也是「6月 , 2026」而非「June」
+        page = browser.new_page(user_agent=UA, locale="zh-TW")
 
         deadline = time.monotonic() + LOOP_MAX_MINUTES * 60
         while True:
