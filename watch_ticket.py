@@ -15,6 +15,7 @@ Accupass 票券監看腳本（雲端排程版 · 特定場次精準監看）
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -41,6 +42,12 @@ TICKET_URL = f"https://www.accupass.com/eflow/ticket/{EVENT_ID}"
 # TARGET_DATE_FRAGMENT 用來事後核對日期框真的切對了（格式同頁面：YYYY / MM / DD）。
 TARGET_DAY = 13
 TARGET_DATE_FRAGMENT = "2026 / 06 / 13"
+
+# 從 TARGET_DATE_FRAGMENT 拆出目標「年、月」，用來把日曆先切到正確月份再點日期。
+# 訂票頁預設可能停在別的月份（例如 5 月），一定要先換到目標月才找得到 6/13。
+_ymd = re.findall(r"\d+", TARGET_DATE_FRAGMENT)
+TARGET_YEAR = int(_ymd[0])
+TARGET_MONTH = int(_ymd[1])
 
 # 完整場次時間表（時段 → 第幾場次），用來在通知與 log 裡標明場次編號。
 SESSION_LABELS = {
@@ -102,6 +109,23 @@ def now_str() -> str:
     return datetime.now(TW_TZ).strftime("%Y-%m-%d %H:%M:%S (UTC+8)")
 
 
+# 在瀏覽器裡執行的 JS：讀日曆目前顯示的「月份標題」（例如 "5月 , 2026"）
+JS_READ_MONTH_TITLE = """() => {
+    const el = document.querySelector('[class*=calendar-title__]');
+    return el ? el.textContent.trim() : '';
+}"""
+
+# 在瀏覽器裡執行的 JS：點日曆標題列的「上個月 / 下個月」箭頭。
+# 標題列有兩個 icon-wrapper：第一個是上個月、最後一個是下個月。
+JS_CLICK_MONTH_NAV = """(dir) => {
+    const iws = [...document.querySelectorAll('[class*=calendar-icon-wrapper]')];
+    if (!iws.length) return false;
+    const btn = dir === 'next' ? iws[iws.length - 1] : iws[0];
+    if (!btn) return false;
+    btn.click();
+    return true;
+}"""
+
 # 在瀏覽器裡執行的 JS：把日曆上「當月、未停用」的指定號數點下去
 JS_CLICK_DAY = """(day) => {
     for (const el of document.querySelectorAll('[class*=calendar-date]')) {
@@ -139,6 +163,33 @@ JS_READ_SESSIONS = """() => {
 }"""
 
 
+def _navigate_to_target_month(page) -> str:
+    """
+    把日曆切到 TARGET_YEAR/TARGET_MONTH（必要時按上/下個月）。
+    回傳最後看到的月份標題字串，方便除錯。
+    """
+    last_title = ""
+    for _ in range(24):  # 最多按 24 次，足夠跨好幾個月、避免萬一卡住無限迴圈
+        last_title = page.evaluate(JS_READ_MONTH_TITLE) or ""
+        m = re.search(r"(\d{1,2})月", last_title)
+        y = re.search(r"(20\d{2})", last_title)
+        cur_month = int(m.group(1)) if m else None
+        cur_year = int(y.group(1)) if y else None
+
+        # 已經在目標月份就停
+        if cur_month == TARGET_MONTH and cur_year == TARGET_YEAR:
+            break
+
+        # 判斷要往前還是往後翻；讀不到月份時預設往後翻
+        if cur_month and cur_year:
+            go_next = (cur_year, cur_month) < (TARGET_YEAR, TARGET_MONTH)
+        else:
+            go_next = True
+        page.evaluate(JS_CLICK_MONTH_NAV, "next" if go_next else "prev")
+        page.wait_for_timeout(500)  # 等日曆換月重繪
+    return last_title
+
+
 def check_on_page(page):
     """
     在既有的 page 上：開訂票頁、切到目標日期、讀場次狀態。
@@ -149,19 +200,26 @@ def check_on_page(page):
 
     # 1) 點開日期輸入框（用 JS 點，避免被 sticky 標題列擋住）
     page.eval_on_selector("input[class*=calendar-input]", "el => el.click()")
-    page.wait_for_timeout(1_500)
+    page.wait_for_timeout(1_200)
 
-    # 2) 在日曆上點目標號數
+    # 2) 先把日曆切到目標月份（訂票頁預設可能停在別的月份）
+    month_title = _navigate_to_target_month(page)
+
+    # 3) 在目標月份點目標號數
     clicked = page.evaluate(JS_CLICK_DAY, TARGET_DAY)
     page.wait_for_timeout(3_500)  # 等切換日期後場次重新載入
 
-    # 3) 讀日期框現在的值，待會核對
+    # 4) 讀日期框現在的值，待會核對
     try:
         date_value = page.eval_on_selector("input[class*=calendar-input]", "el => el.value")
     except Exception:
         date_value = ""
 
-    # 4) 讀所有場次狀態
+    # 沒切到目標日期時，把當下月份標題一起印出來，方便除錯
+    if TARGET_DATE_FRAGMENT not in (date_value or ""):
+        print(f"[{now_str()}] （除錯）月份標題=「{month_title}」, 日期框=「{date_value}」, 點到日期={clicked}")
+
+    # 5) 讀所有場次狀態
     results = page.evaluate(JS_READ_SESSIONS)
     return date_value, results, clicked
 
