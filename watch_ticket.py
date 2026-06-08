@@ -67,10 +67,12 @@ SESSION_LABELS = {
 }
 
 # 要監看的「場次時段」：清單裡任一個釋出名額就通知。
-# 目前監看 6/13「13:30 以後」開始的所有場次（第4～第13場）。
+# 目前監看 6/13「13:30 以後」開始的場次，但排除已搶到的第8場（16:50-17:30）。
 # 想改範圍就改下面的篩選條件（時間用 HH:MM、零位補齊才比得對），
 # 或直接寫成清單如 ["19:40-20:20", "20:30-21:10"]。
-TARGET_SESSIONS = [s for s in SESSION_LABELS if s.split("-")[0] >= "13:30"]
+ALREADY_GOT = {"16:50-17:30"}  # 已搶到的場次，不用再監看
+TARGET_SESSIONS = [s for s in SESSION_LABELS
+                   if s.split("-")[0] >= "13:30" and s not in ALREADY_GOT]
 
 
 def label_of(sess: str) -> str:
