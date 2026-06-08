@@ -13,6 +13,10 @@ on:
         description: "送一則測試通知到 Discord（確認手機收得到，不檢查票況）"
         type: boolean
         default: false
+      loop_minutes:
+        description: "本次最多連續跑幾分鐘（留空＝預設 330。測試時可填 3，會很快結束、log 立刻看得到）"
+        type: string
+        default: ""
 
 # 同時只允許一個監看在跑：長跑進行中時，新觸發會排隊等它結束再接力，避免疊一堆。
 concurrency:
@@ -47,7 +51,8 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           # 手動觸發時若勾選 force_test，就送測試通知（排程自動跑時為空、照常檢查票況）
           FORCE_TEST: ${{ inputs.force_test }}
-          # Loop 模式：每 60 秒檢查一圈，單次最多連續跑 330 分鐘（5.5 小時）後結束、交給下一次接力
+          # Loop 模式：每 60 秒檢查一圈，單次最多連續跑 N 分鐘後結束、交給下一次接力。
+          # 手動觸發可用 loop_minutes 覆寫（留空/排程時 = 330 分鐘）。
           LOOP_INTERVAL_SECONDS: "60"
-          LOOP_MAX_MINUTES: "330"
+          LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
         run: python watch_ticket.py
