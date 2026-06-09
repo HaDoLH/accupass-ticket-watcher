@@ -54,7 +54,7 @@ jobs:
           # Loop 模式：每圈間隔 20 秒（每圈抓取本身約 12 秒，所以實際約每 30 秒檢查一次）。
           # 單次最多連續跑 N 分鐘後結束、交給下一次接力。loop_minutes 可覆寫（留空/排程 = 330）。
           LOOP_INTERVAL_SECONDS: "20"
-          LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '5' }}
+          LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
         run: python watch_ticket.py
 
       # 5. 自我接力：這一棒結束時，用 PAT 立刻觸發下一棒，避免「等 GitHub 排程」的數小時空檔。
