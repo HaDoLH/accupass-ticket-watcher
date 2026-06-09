@@ -63,7 +63,7 @@ jobs:
       #    - 沒設 WATCHER_PAT 時自動略過（不報錯），仍可手動/排程啟動。
       #    - 想完全停止：到 Actions 把這個 workflow Disable，接力觸發就會失效。
       - name: 接力啟動下一棒（消除空檔）
-        if: ${{ always() && github.event.inputs.force_test != 'true' && github.event.inputs.loop_minutes == '' }}
+        if: ${{ always() && github.event.inputs.force_test != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.WATCHER_PAT }}
         run: |
