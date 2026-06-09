@@ -38,16 +38,10 @@ EVENT_ID = "2605080529051188996723"
 # 訂票頁網址（選日期＋場次的那一頁）
 TICKET_URL = f"https://www.accupass.com/eflow/ticket/{EVENT_ID}"
 
-# 要監看的「日期」：TARGET_DAY 是日曆上要點的號數，
-# TARGET_DATE_FRAGMENT 用來事後核對日期框真的切對了（格式同頁面：YYYY / MM / DD）。
-TARGET_DAY = 13
-TARGET_DATE_FRAGMENT = "2026 / 06 / 13"
-
-# 從 TARGET_DATE_FRAGMENT 拆出目標「年、月」，用來把日曆先切到正確月份再點日期。
-# 訂票頁預設可能停在別的月份（例如 5 月），一定要先換到目標月才找得到 6/13。
-_ymd = re.findall(r"\d+", TARGET_DATE_FRAGMENT)
-TARGET_YEAR = int(_ymd[0])
-TARGET_MONTH = int(_ymd[1])
+# 本活動的日期都在 2026 年 6 月；換月導航用（把日曆先切到這個年月再點日期）。
+# 訂票頁預設可能停在別的月份（例如 5 月），一定要先換到目標月才找得到 6/13、6/14。
+TARGET_YEAR = 2026
+TARGET_MONTH = 6
 
 # 完整場次時間表（時段 → 第幾場次），用來在通知與 log 裡標明場次編號。
 SESSION_LABELS = {
@@ -66,13 +60,26 @@ SESSION_LABELS = {
     "21:20-22:00": "第13場次",
 }
 
-# 要監看的「場次時段」：清單裡任一個釋出名額就通知。
-# 目前監看 6/13「13:30 以後」開始的場次，但排除已搶到的第8場（16:50-17:30）。
-# 想改範圍就改下面的篩選條件（時間用 HH:MM、零位補齊才比得對），
-# 或直接寫成清單如 ["19:40-20:20", "20:30-21:10"]。
-ALREADY_GOT = {"16:50-17:30"}  # 已搶到的場次，不用再監看
-TARGET_SESSIONS = [s for s in SESSION_LABELS
-                   if s.split("-")[0] >= "13:30" and s not in ALREADY_GOT]
+# ── 監看清單：要盯哪些「日期 + 場次」。任一場釋出名額就通知。──────────
+# 每一筆：label=顯示用；day=日曆要點的號數；fragment=核對日期框切對沒（YYYY / MM / DD）；
+#         sessions=該日要盯的場次時段（時間用零位補齊 HH:MM 才比得對）。
+WATCH_LIST = [
+    {
+        "label": "6/13（六）",
+        "day": 13,
+        "fragment": "2026 / 06 / 13",
+        # 6/13：13:30 以後的場次，但扣掉已搶到的第8場（16:50-17:30）
+        "sessions": [s for s in SESSION_LABELS
+                     if s.split("-")[0] >= "13:30" and s != "16:50-17:30"],
+    },
+    {
+        "label": "6/14（日）",
+        "day": 14,
+        "fragment": "2026 / 06 / 14",
+        # 6/14：13:00-16:00 區間＝第4、5、6 場
+        "sessions": ["13:30-14:10", "14:20-15:00", "15:10-15:50"],
+    },
+]
 
 
 def label_of(sess: str) -> str:
@@ -212,10 +219,10 @@ def _navigate_to_target_month(page) -> str:
     return last_title
 
 
-def check_on_page(page):
+def check_one_date(page, spec):
     """
-    在既有的 page 上：開訂票頁、切到目標日期、讀場次狀態。
-    回傳 (date_value, results, clicked)。讓 loop 能共用同一個瀏覽器、不用每圈重開。
+    開訂票頁、切到 spec 指定的日期、讀該日場次狀態。
+    回傳 (date_value, results, clicked)。一個 spec = 一個日期 + 該日要盯的場次。
     """
     page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
     page.wait_for_timeout(4_000)  # 等場次卡片渲染
@@ -228,7 +235,7 @@ def check_on_page(page):
     month_title = _navigate_to_target_month(page)
 
     # 3) 在目標月份點目標號數
-    clicked = page.evaluate(JS_CLICK_DAY, TARGET_DAY)
+    clicked = page.evaluate(JS_CLICK_DAY, spec["day"])
     page.wait_for_timeout(3_500)  # 等切換日期後場次重新載入
 
     # 4) 讀日期框現在的值，待會核對
@@ -238,7 +245,7 @@ def check_on_page(page):
         date_value = ""
 
     # 沒切到目標日期時，把當下月份標題一起印出來，方便除錯
-    if TARGET_DATE_FRAGMENT not in (date_value or ""):
+    if spec["fragment"] not in (date_value or ""):
         print(f"[{now_str()}] （除錯）月份標題=「{month_title}」, 日期框=「{date_value}」, 點到日期={clicked}")
 
     # 5) 讀所有場次狀態
@@ -268,12 +275,12 @@ def _post_discord(message: str) -> None:
         print(f"✅ 已送出 Discord 通知（HTTP {resp.status}）")
 
 
-def notify_discord(opened_sessions) -> None:
-    """把『釋出名額』推播到 Discord。"""
+def notify_discord(spec, opened_sessions) -> None:
+    """把某一天『釋出名額』推播到 Discord。"""
     sessions_text = "\n".join(f"・{label_of(s)}" for s in opened_sessions)
     message = (
         "🎫 釋出名額了！SUPER JUNIOR SJ MARKET\n"
-        f"日期：2026/06/13（六）\n"
+        f"日期：2026/{spec['label']}\n"
         f"以下場次目前可報名：\n{sessions_text}\n"
         f"時間：{now_str()}\n"
         f"快去搶 👉 {TICKET_URL}"
@@ -286,24 +293,24 @@ def send_test_notification() -> None:
     message = (
         "🔔 這是一則測試通知\n"
         "如果你在手機看到這則，代表 Accupass 票券監看的推播管道正常 👍\n"
-        f"監看中：6/13 共 {len(TARGET_SESSIONS)} 個場次（13:30 以後）\n"
+        f"監看中：{'；'.join(spec['label'] + ' ' + str(len(spec['sessions'])) + '場' for spec in WATCH_LIST)}\n"
         f"時間：{now_str()}"
     )
     print(f"[{now_str()}] 🧪 測試模式：送出測試通知")
     _post_discord(message)
 
 
-def evaluate_and_notify(date_value, results, clicked) -> None:
+def evaluate_and_notify(spec, date_value, results, clicked) -> None:
     """把一次檢查的結果整理、印出 log，並在有場次釋出時推 Discord。"""
     # 核對日期有沒有切對；沒切對就不做判斷（避免拿錯日期誤報）
-    if TARGET_DATE_FRAGMENT not in (date_value or ""):
-        print(f"[{now_str()}] ⚠️ 日期沒切到 6/13（目前顯示「{date_value}」, 點到日期={clicked}），"
+    if spec["fragment"] not in (date_value or ""):
+        print(f"[{now_str()}] ⚠️ {spec['label']} 日期沒切對（目前顯示「{date_value}」, 點到={clicked}），"
               f"這圈先跳過，等下一圈重試。")
         return
 
     opened = []          # 已釋出（可報名）的目標場次
     summary = []         # 給 log 看的整體狀態
-    for sess in TARGET_SESSIONS:
+    for sess in spec["sessions"]:
         hit = next((r for r in results if sess in r["name"]), None)
         if hit is None:
             summary.append(f"{label_of(sess)}=找不到")
@@ -313,27 +320,33 @@ def evaluate_and_notify(date_value, results, clicked) -> None:
             summary.append(f"{label_of(sess)}=★可報名★")
             opened.append(sess)
 
-    print(f"[{now_str()}] 日期：{date_value}｜場次狀態：{ '、'.join(summary) }")
+    print(f"[{now_str()}] {spec['label']}｜{date_value}｜{ '、'.join(summary) }")
 
     if opened:
         opened_labels = "、".join(label_of(s) for s in opened)
-        print(f"[{now_str()}] 🟢 有場次釋出名額：{opened_labels}")
+        print(f"[{now_str()}] 🟢 {spec['label']} 有場次釋出名額：{opened_labels}")
         try:
-            notify_discord(opened)
+            notify_discord(spec, opened)
         except Exception as e:
             print(f"[{now_str()}] ⚠️ Discord 推播失敗：{type(e).__name__}: {e}")
     else:
-        print(f"[{now_str()}] ⚪ 目標場次目前都還是已售完，繼續監看。")
+        print(f"[{now_str()}] ⚪ {spec['label']} 場次目前都還是已售完。")
 
 
-def run_once(page) -> None:
+def _check_and_notify_one(page, spec) -> None:
     """跑一圈檢查＋通知；把例外接住，確保 loop 裡單圈失敗不會中斷整個監看。"""
     try:
-        date_value, results, clicked = check_on_page(page)
+        date_value, results, clicked = check_one_date(page, spec)
     except Exception as e:
         print(f"[{now_str()}] ⚠️ 抓取失敗：{type(e).__name__}: {e}")
         return
-    evaluate_and_notify(date_value, results, clicked)
+    evaluate_and_notify(spec, date_value, results, clicked)
+
+
+def run_once(page) -> None:
+    """跑一圈：逐個日期切換、讀取、評估、通知。"""
+    for spec in WATCH_LIST:
+        _check_and_notify_one(page, spec)
 
 
 def main() -> int:
@@ -347,7 +360,8 @@ def main() -> int:
 
     looping = LOOP_INTERVAL_SECONDS > 0
     print(f"[{now_str()}] 開始監看：{TICKET_URL}")
-    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in TARGET_SESSIONS) }")
+    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in WATCH_LIST[0]['sessions']) }")
+    print(f"[{now_str()}] 監看 6/14 場次：" + "、".join(label_of(s) for s in WATCH_LIST[1]['sessions']))
     if looping:
         print(f"[{now_str()}] Loop 模式：每 {LOOP_INTERVAL_SECONDS} 秒檢查一圈，最多連續跑 {LOOP_MAX_MINUTES} 分鐘")
 
