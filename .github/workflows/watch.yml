@@ -19,8 +19,9 @@ on:
         default: ""
 
 # 同時只允許一個監看在跑：長跑進行中時，新觸發會排隊等它結束再接力，避免疊一堆。
+# force_test（測試通知）用獨立 group，才不會被長跑監看卡住排隊，能立刻跑。
 concurrency:
-  group: ticket-watcher
+  group: ${{ github.event.inputs.force_test == 'true' && 'ticket-watcher-test' || 'ticket-watcher' }}
   cancel-in-progress: false
 
 jobs:
