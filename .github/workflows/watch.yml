@@ -51,9 +51,9 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           # 手動觸發時若勾選 force_test，就送測試通知（排程自動跑時為空、照常檢查票況）
           FORCE_TEST: ${{ inputs.force_test }}
-          # Loop 模式：每 60 秒檢查一圈，單次最多連續跑 N 分鐘後結束、交給下一次接力。
-          # 手動觸發可用 loop_minutes 覆寫（留空/排程時 = 330 分鐘）。
-          LOOP_INTERVAL_SECONDS: "60"
+          # Loop 模式：每圈間隔 20 秒（每圈抓取本身約 12 秒，所以實際約每 30 秒檢查一次）。
+          # 單次最多連續跑 N 分鐘後結束、交給下一次接力。loop_minutes 可覆寫（留空/排程 = 330）。
+          LOOP_INTERVAL_SECONDS: "20"
           LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
         run: python watch_ticket.py
 
