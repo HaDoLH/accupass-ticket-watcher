@@ -56,3 +56,20 @@ jobs:
           LOOP_INTERVAL_SECONDS: "60"
           LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
         run: python watch_ticket.py
+
+      # 5. 自我接力：這一棒結束時，用 PAT 立刻觸發下一棒，避免「等 GitHub 排程」的數小時空檔。
+      #    - 只在「正常長跑」時接力；force_test 或短測試(loop_minutes)不接力。
+      #    - if: always() → 即使上面逾時/出錯也照常接力，監看不中斷。
+      #    - 沒設 WATCHER_PAT 時自動略過（不報錯），仍可手動/排程啟動。
+      #    - 想完全停止：到 Actions 把這個 workflow Disable，接力觸發就會失效。
+      - name: 接力啟動下一棒（消除空檔）
+        if: ${{ always() && github.event.inputs.force_test != 'true' && github.event.inputs.loop_minutes == '' }}
+        env:
+          GH_TOKEN: ${{ secrets.WATCHER_PAT }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            echo "用 PAT 接力觸發下一棒監看..."
+            gh workflow run watch.yml --repo "${{ github.repository }}"
+          else
+            echo "（未設定 WATCHER_PAT，略過自我接力；目前仍依賴 GitHub 排程，可能有空檔）"
+          fi
