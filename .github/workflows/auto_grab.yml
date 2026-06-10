@@ -1,0 +1,62 @@
+name: Accupass 自動卡位
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "測試模式：偵測到也不真的下單（第一次建議 true，先確認雲端登入有效）"
+        type: boolean
+        default: true
+      loop_minutes:
+        description: "本次最多連續跑幾分鐘（留空＝330）"
+        type: string
+        default: ""
+
+# 跟監看/日報不同 group，互不干擾
+concurrency:
+  group: ticket-autograb
+  cancel-in-progress: false
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝套件與瀏覽器
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 還原登入狀態（從 Secret 寫成 state.json）
+        env:
+          ACCUPASS_STATE: ${{ secrets.ACCUPASS_STATE }}
+        run: printf '%s' "$ACCUPASS_STATE" > state.json
+
+      - name: 執行自動卡位
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          LOOP_INTERVAL_SECONDS: "20"
+          LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
+        run: python auto_grab.py
+
+      # 接力下一棒：非 dry_run、未卡到、非取消時才接力（同自我接力機制）
+      - name: 接力啟動下一棒
+        if: ${{ !cancelled() && inputs.dry_run != true && hashFiles('grabbed.flag') == '' }}
+        env:
+          GH_TOKEN: ${{ secrets.WATCHER_PAT }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            echo "接力觸發下一棒自動卡位..."
+            gh workflow run auto_grab.yml --repo "${{ github.repository }}" -f dry_run=false
+          else
+            echo "未設 WATCHER_PAT，略過接力"
+          fi
