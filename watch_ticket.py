@@ -68,16 +68,15 @@ WATCH_LIST = [
         "label": "6/13（六）",
         "day": 13,
         "fragment": "2026 / 06 / 13",
-        # 6/13：13:30 以後的場次，但扣掉已搶到的第8場（16:50-17:30）
-        "sessions": [s for s in SESSION_LABELS
-                     if s.split("-")[0] >= "13:30" and s != "16:50-17:30"],
+        # 6/13：全部 13 個時段（含早場），先求不漏接、看問題出在哪
+        "sessions": list(SESSION_LABELS.keys()),
     },
     {
         "label": "6/14（日）",
         "day": 14,
         "fragment": "2026 / 06 / 14",
-        # 6/14：13:00-16:00 區間＝第4、5、6 場
-        "sessions": ["13:30-14:10", "14:20-15:00", "15:10-15:50"],
+        # 6/14：全部 13 個時段（週日無第13場，會顯示找不到、無害）
+        "sessions": list(SESSION_LABELS.keys()),
     },
 ]
 
@@ -277,11 +276,12 @@ def _post_discord(message: str) -> None:
 
 def notify_discord(spec, opened_sessions) -> None:
     """把某一天『釋出名額』推播到 Discord。"""
+    sessions_inline = "、".join(label_of(s) for s in opened_sessions)
     sessions_text = "\n".join(f"・{label_of(s)}" for s in opened_sessions)
     message = (
-        "🎫 釋出名額了！SUPER JUNIOR SJ MARKET\n"
-        f"日期：2026/{spec['label']}\n"
-        f"以下場次目前可報名：\n{sessions_text}\n"
+        f"🎫 {spec['label']} {sessions_inline} 可報名了！\n"
+        "SUPER JUNIOR SJ MARKET\n"
+        f"可報名場次：\n{sessions_text}\n"
         f"時間：{now_str()}\n"
         f"快去搶 👉 {TICKET_URL}"
     )
