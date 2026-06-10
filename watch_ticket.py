@@ -63,22 +63,22 @@ SESSION_LABELS = {
 # ── 監看清單：要盯哪些「日期 + 場次」。任一場釋出名額就通知。──────────
 # 每一筆：label=顯示用；day=日曆要點的號數；fragment=核對日期框切對沒（YYYY / MM / DD）；
 #         sessions=該日要盯的場次時段（時間用零位補齊 HH:MM 才比得對）。
-WATCH_LIST = [
-    {
-        "label": "6/13（六）",
-        "day": 13,
-        "fragment": "2026 / 06 / 13",
-        # 6/13：全部 13 個時段（含早場），先求不漏接、看問題出在哪
-        "sessions": list(SESSION_LABELS.keys()),
-    },
-    {
-        "label": "6/14（日）",
-        "day": 14,
-        "fragment": "2026 / 06 / 14",
-        # 6/14：全部 13 個時段（週日無第13場，會顯示找不到、無害）
-        "sessions": list(SESSION_LABELS.keys()),
-    },
-]
+# ── 暫時診斷（2026-06-10）：監看 6/10～6/25 全部日期、全部時段，找出漏接問題。
+#    明天會改回只盯 6/13 + 6/14（把下面 range 改回，或還原成兩筆即可）。
+_WEEKDAY_TW = ["一", "二", "三", "四", "五", "六", "日"]  # 週一=0 … 週日=6
+
+
+def _make_day_spec(day: int) -> dict:
+    wd = _WEEKDAY_TW[datetime(2026, 6, day).weekday()]
+    return {
+        "label": f"6/{day}（{wd}）",
+        "day": day,
+        "fragment": f"2026 / 06 / {day:02d}",
+        "sessions": list(SESSION_LABELS.keys()),  # 全部 13 個時段
+    }
+
+
+WATCH_LIST = [_make_day_spec(d) for d in range(10, 26)]  # 6/10 ~ 6/25（含）
 
 
 def label_of(sess: str) -> str:
@@ -360,8 +360,8 @@ def main() -> int:
 
     looping = LOOP_INTERVAL_SECONDS > 0
     print(f"[{now_str()}] 開始監看：{TICKET_URL}")
-    print(f"[{now_str()}] 監看 6/13 場次：{ '、'.join(label_of(s) for s in WATCH_LIST[0]['sessions']) }")
-    print(f"[{now_str()}] 監看 6/14 場次：" + "、".join(label_of(s) for s in WATCH_LIST[1]['sessions']))
+    print(f"[{now_str()}] 監看 {len(WATCH_LIST)} 個日期：" + "、".join(w['label'] for w in WATCH_LIST))
+    print(f"[{now_str()}] 每個日期盯 {len(WATCH_LIST[0]['sessions'])} 個時段")
     if looping:
         print(f"[{now_str()}] Loop 模式：每 {LOOP_INTERVAL_SECONDS} 秒檢查一圈，最多連續跑 {LOOP_MAX_MINUTES} 分鐘")
 
