@@ -1,0 +1,37 @@
+name: 監看健康日報
+
+on:
+  schedule:
+    # 每天 01:00 UTC = 台灣早上 09:00 推一份「昨晚有沒有連續跑」的報告
+    - cron: "0 1 * * *"
+  workflow_dispatch:   # 也可手動觸發，立刻產一份報告
+
+# 讀自己 repo 的 Actions 執行 log 需要這個權限
+permissions:
+  actions: read
+  contents: read
+
+# 跟監看不同 group，互不干擾
+concurrency:
+  group: ticket-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 產生並推送健康報告
+        env:
+          # gh CLI 用這個 token 讀執行紀錄與 log
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python daily_report.py
