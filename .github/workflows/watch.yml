@@ -56,6 +56,8 @@ jobs:
           # 單次最多連續跑 N 分鐘後結束、交給下一次接力。loop_minutes 可覆寫（留空/排程 = 330）。
           LOOP_INTERVAL_SECONDS: "20"
           LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
+          # 關閉 Python 輸出緩衝：讓每圈 log 即時寫出，長跑中途被中止也不會整批遺失（方便診斷）
+          PYTHONUNBUFFERED: "1"
         run: python watch_ticket.py
 
       # 5. 自我接力：這一棒結束時，用 PAT 立刻觸發下一棒，避免「等 GitHub 排程」的數小時空檔。
