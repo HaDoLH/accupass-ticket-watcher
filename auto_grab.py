@@ -103,12 +103,16 @@ def label_for(day, sess):
     return f"6/{day}（{wd}） {sess}"
 
 
-def post_discord(message):
+def post_discord(message, ping=False):
     print(message)
     if not DISCORD_WEBHOOK_URL:
         print("（未設 DISCORD_WEBHOOK_URL，略過推播）")
         return
-    data = json.dumps({"content": message}).encode("utf-8")
+    payload = {"content": message}
+    if ping:
+        # 允許 @everyone 真的觸發通知（私人頻道、tag 自己提醒用）
+        payload["allowed_mentions"] = {"parse": ["everyone"]}
+    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         DISCORD_WEBHOOK_URL, data=data,
         headers={"Content-Type": "application/json",
@@ -231,6 +235,8 @@ def verify_login(page):
 _auth = {"header": None}
 # 查詢用的短效 token（GetOrRenewToken 給的，約 11 分鐘有效）
 _token = {"value": None, "exp": 0.0}
+# 已 @everyone 通知過的場次（同一場只 tag 一次，避免洗頻）
+_notified = set()
 
 
 def _on_queue_request(req):
@@ -325,10 +331,15 @@ def run_once(page, api, cycle=0):
     day, sess = target["day"], target["sess"]
     label = label_for(day, sess)
     print(f"[{now_str()}] 🟢 偵測到可報名：{label}（{target['sold']}/{target['total']}）｜本圈可報名：{[a['name'] for a in avail]}")
+    # 同一場只 @everyone 一次，避免卡位反覆失敗時每幾秒洗一次頻
+    first_time = label not in _notified
+    _notified.add(label)
     # 先立刻通知（安全網：就算自動卡位失敗，你也能馬上手動搶）
-    post_discord(f"🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}")
+    if first_time:
+        post_discord(f"@everyone\n🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}", ping=True)
     if DRY_RUN:
-        post_discord(f"（DRY_RUN 測試模式：偵測到 {label}，不實際下單）")
+        if first_time:
+            post_discord(f"（DRY_RUN 測試模式：偵測到 {label}，不實際下單）")
         return False
 
     # 用瀏覽器衝到報名頁卡位（這段在搶到時才跑一次）
@@ -340,9 +351,11 @@ def run_once(page, api, cycle=0):
     except Exception as e:
         grabbed, detail = False, f"卡位流程例外：{type(e).__name__}: {e}"
     if grabbed:
-        post_discord(f"✅ 已卡到位：{label}！\n10 分鐘內打開 Accupass（同一帳號）接續填資料送出。\n別自己另開新訂單，直接接這筆。\n{TICKET_URL}")
+        # 卡到位最重要 → 一定 @everyone（出聲＋跳通知）
+        post_discord(f"@everyone\n✅ 已卡到位：{label}！\n10 分鐘內打開 Accupass（同一帳號）接續填資料送出。\n別自己另開新訂單，直接接這筆。\n{TICKET_URL}", ping=True)
         return True
-    post_discord(f"⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}")
+    if first_time:
+        post_discord(f"@everyone\n⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}", ping=True)
     return False
 
 
