@@ -210,10 +210,13 @@ def verify_login(page):
     return ok, f"登入按鈕={'有' if has_login_btn else '無'}, 社群頭像={'有' if avatar else '無'}"
 
 
-def run_once(page):
+def run_once(page, cycle=0):
     """掃一圈所有日期；偵測到可報名就先通知、再嘗試卡位。回傳 True=已成功卡到（要停）。"""
+    t0 = time.monotonic()
     page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
     page.wait_for_timeout(3500)
+    days_ok = 0          # 成功切換並讀到場次的天數（用來確認掃描沒壞）
+    days_avail = []      # 當圈偵測到「有可報名」的日期
     for day in GRAB_DAYS:
         try:
             val, sessions = switch_to_day(page, day)
@@ -222,9 +225,11 @@ def run_once(page):
             continue
         if not val:
             continue
+        days_ok += 1
         avail = [r["name"] for r in sessions if not r["soldOut"]]
         if not avail:
             continue
+        days_avail.append(day)
         # 取第一個可報名場次的時段（從名稱抓 HH:MM-HH:MM）
         m = re.search(r"\d{2}:\d{2}-\d{2}:\d{2}", avail[0])
         sess = m.group(0) if m else avail[0]
@@ -246,6 +251,10 @@ def run_once(page):
         else:
             post_discord(f"⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}")
             # 不 return，繼續看其他日期
+    # 每圈心跳：確認 bot 還活著、掃描沒壞、量得出一圈耗時（不再是黑箱）
+    dur = time.monotonic() - t0
+    summary = f"可報名日={days_avail}" if days_avail else "全部售完"
+    print(f"[{now_str()}] 第 {cycle} 圈完成｜讀到 {days_ok}/{len(GRAB_DAYS)} 天｜耗時 {dur:.0f}s｜{summary}")
     return False
 
 
@@ -272,9 +281,11 @@ def main():
         except Exception as e:
             print(f"[{now_str()}] 登入檢查例外：{type(e).__name__}: {e}")
 
+        cycle = 0
         while True:
+            cycle += 1
             try:
-                grabbed = run_once(page)
+                grabbed = run_once(page, cycle)
             except Exception as e:
                 print(f"[{now_str()}] 本圈例外：{type(e).__name__}: {e}")
                 grabbed = False
