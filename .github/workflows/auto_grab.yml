@@ -44,9 +44,9 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DRY_RUN: ${{ inputs.dry_run }}
-          # 只通知模式：偵測到釋出就 @everyone 叫人手動搶，bot 不自動下單（避免封帳號風險）。
-          # 想改回「全自動卡位」就把這行改成 "0" 或刪掉。
-          NOTIFY_ONLY: "1"
+          # 自動卡位模式（測試「我的訂單」交接用）：偵測到就自動卡位、卡到一次就停。
+          # 想改回「只通知不下單」把這行改成 "1"。
+          NOTIFY_ONLY: "0"
           # API 偵測一圈約 0.5~1 秒（一次掃完所有日期）；間隔 3 秒 → 回訪約 4 秒
           LOOP_INTERVAL_SECONDS: "3"
           LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}

@@ -359,16 +359,25 @@ def run_once(page, api, cycle=0):
         return False
 
     # 用瀏覽器衝到報名頁卡位（這段在搶到時才跑一次）
+    order_url = ""
     try:
         page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
         page.wait_for_timeout(1500)
         switch_to_day(page, day)
         grabbed, detail = attempt_grab(page, day, sess)
+        order_url = page.url  # 卡到後的「專屬訂單網址」
     except Exception as e:
         grabbed, detail = False, f"卡位流程例外：{type(e).__name__}: {e}"
     if grabbed:
-        # 卡到位最重要 → 一定 @everyone（出聲＋跳通知）
-        post_discord(f"@everyone\n✅ 已卡到位：{label}！\n10 分鐘內打開 Accupass（同一帳號）接續填資料送出。\n別自己另開新訂單，直接接這筆。\n{TICKET_URL}", ping=True)
+        # 卡到位最重要 → 一定 @everyone。給兩條接手路：我的訂單 + 直接訂單連結
+        post_discord(
+            f"@everyone\n"
+            f"# ✅ 已卡到位：{label}\n"
+            f"**10 分鐘內完成**，兩條路擇一接手：\n"
+            f"① 打開 Accupass →「**我的訂單／報名紀錄**」→ 那筆未完成的 → 接著填送出\n"
+            f"② 或直接點這筆訂單連結 👉 {order_url}\n"
+            f"⚠️ 別自己另開新報名，直接接這筆。",
+            ping=True)
         return True
     if first_time:
         post_discord(f"@everyone\n⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}", ping=True)
