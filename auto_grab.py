@@ -56,6 +56,8 @@ LOOP_INTERVAL_SECONDS = int(os.environ.get("LOOP_INTERVAL_SECONDS", "20") or "20
 LOOP_MAX_MINUTES = int(os.environ.get("LOOP_MAX_MINUTES", "330") or "330")
 # 測試用：DRY_RUN=1 → 偵測到也只通知、不真的按「立即報名」下單
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+# 只通知模式：偵測到釋出就 @everyone 叫你手動搶，bot 完全不碰下單動作（降低封帳號風險）
+NOTIFY_ONLY = os.environ.get("NOTIFY_ONLY", "").strip().lower() in ("1", "true", "yes")
 
 _WEEKDAY_TW = ["一", "二", "三", "四", "五", "六", "日"]
 
@@ -331,9 +333,19 @@ def run_once(page, api, cycle=0):
     day, sess = target["day"], target["sess"]
     label = label_for(day, sess)
     print(f"[{now_str()}] 🟢 偵測到可報名：{label}（{target['sold']}/{target['total']}）｜本圈可報名：{[a['name'] for a in avail]}")
-    # 同一場只 @everyone 一次，避免卡位反覆失敗時每幾秒洗一次頻
+    # 同一場只 @everyone 一次，避免反覆偵測時每幾秒洗一次頻
     first_time = label not in _notified
     _notified.add(label)
+
+    # 只通知模式：叫你手動搶，bot 不下單
+    if NOTIFY_ONLY:
+        if first_time:
+            post_discord(
+                f"@everyone\n🔔 {label} 釋出名額（{target['sold']}/{target['total']}）！\n"
+                f"快用手機/網頁手動搶（要同一個 FB 帳號登入），10 分鐘內完成 👉 {TICKET_URL}",
+                ping=True)
+        return False
+
     # 先立刻通知（安全網：就算自動卡位失敗，你也能馬上手動搶）
     if first_time:
         post_discord(f"@everyone\n🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}", ping=True)
@@ -364,7 +376,8 @@ def main():
         print(f"找不到 {STATE_PATH}（登入狀態）。本機請先跑 export_login.py；雲端請設 ACCUPASS_STATE secret。")
         return 1
 
-    print(f"[{now_str()}] 自動卡位 bot 啟動｜API 偵測 {DAYS_LABEL} 全時段｜DRY_RUN={DRY_RUN}")
+    mode = "只通知不下單" if NOTIFY_ONLY else ("DRY 測試" if DRY_RUN else "自動卡位")
+    print(f"[{now_str()}] bot 啟動｜API 偵測 {DAYS_LABEL} 全時段｜模式={mode}")
     deadline = time.monotonic() + LOOP_MAX_MINUTES * 60
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
