@@ -22,6 +22,7 @@ import sys
 import json
 import time
 import urllib.request
+from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 
 from playwright.sync_api import sync_playwright
@@ -42,9 +43,14 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 # 要顧的日期；每天全部時段任一釋出就搶。
-# 縮到 6/13+6/14 兩天 → 回訪由 64 秒降到約 8~10 秒，才追得上秒搶釋出。
+# 改用 API 偵測後，一次掃完所有日期只要 1~2 秒，不必再為了速度縮範圍，
+# 所以顧回完整 6/10~6/25（哪天釋出都抓得到）。
 TARGET_YEAR, TARGET_MONTH = 2026, 6
-GRAB_DAYS = [13, 14]
+GRAB_DAYS = list(range(10, 26))
+DAYS_LABEL = f"6/{GRAB_DAYS[0]}~6/{GRAB_DAYS[-1]}"
+
+# Accupass 票況查詢 API（eflow-queue）：一次回傳整個活動所有場次的票況。
+QUEUE_BASE = "https://eflow-queue.accupass.com/api"
 
 LOOP_INTERVAL_SECONDS = int(os.environ.get("LOOP_INTERVAL_SECONDS", "20") or "20")
 LOOP_MAX_MINUTES = int(os.environ.get("LOOP_MAX_MINUTES", "330") or "330")
@@ -211,51 +217,123 @@ def verify_login(page):
     return ok, f"登入按鈕={'有' if has_login_btn else '無'}, 社群頭像={'有' if avatar else '無'}"
 
 
-def run_once(page, cycle=0):
-    """掃一圈所有日期；偵測到可報名就先通知、再嘗試卡位。回傳 True=已成功卡到（要停）。"""
-    t0 = time.monotonic()
+# ── API 偵測（取代逐日點日曆，快 ~50 倍）────────────────────
+# 啟動時攔下網站自己發的 authorization 標頭，重複用（不必碰登入 token 明文）。
+_auth = {"header": None}
+# 查詢用的短效 token（GetOrRenewToken 給的，約 11 分鐘有效）
+_token = {"value": None, "exp": 0.0}
+
+
+def _on_queue_request(req):
+    if "eflow-queue.accupass.com" in req.url:
+        a = req.headers.get("authorization")
+        if a and not _auth["header"]:
+            _auth["header"] = a
+
+
+def capture_auth(page):
+    """開票券頁，攔下 authorization 標頭。回傳是否攔到。"""
     page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
-    page.wait_for_timeout(3500)
-    days_ok = 0          # 成功切換並讀到場次的天數（用來確認掃描沒壞）
-    days_avail = []      # 當圈偵測到「有可報名」的日期
-    for day in GRAB_DAYS:
-        try:
-            val, sessions = switch_to_day(page, day)
-        except Exception as e:
-            print(f"[{now_str()}] 6/{day} 讀取失敗：{type(e).__name__}: {e}")
+    page.wait_for_timeout(4000)
+    return bool(_auth["header"])
+
+
+def api_renew_token(api):
+    """POST GetOrRenewToken 取得查詢 token。回傳 (ok, isCanOrder, msg)。"""
+    if not _auth["header"]:
+        return False, False, "尚未取得 authorization 標頭"
+    hdr = {"authorization": _auth["header"], "content-type": "application/json"}
+    try:
+        r = api.post(f"{QUEUE_BASE}/GetOrRenewToken?EventIdNumber={EVENT_ID}", headers=hdr, data="{}")
+        j = r.json()
+        _token["value"] = j.get("token")
+        _token["exp"] = time.monotonic() + 9 * 60  # 提早 2 分鐘續，保險
+        return bool(_token["value"]), bool(j.get("isCanOrder")), j.get("customMessage", "")
+    except Exception as e:
+        return False, False, f"{type(e).__name__}: {e}"
+
+
+def api_scan(api):
+    """用 API 掃全部場次票況。回傳 (available, ok, err)。
+    available = [{name, day, sess, sold, total}]（限 GRAB_DAYS、非 Expired/SoldOut、sold<total）。"""
+    hdr = {"authorization": _auth["header"], "content-type": "application/json"}
+    if not _token["value"] or time.monotonic() > _token["exp"]:
+        ok, _, msg = api_renew_token(api)
+        if not ok:
+            return [], False, f"取 token 失敗：{msg}"
+    try:
+        # token 含 + / = 等字元，放進網址必須 URL 編碼（safe='' 連 / 也編）
+        url = f"{QUEUE_BASE}/GetEventTickets?eventIdNumber={EVENT_ID}&token={quote(_token['value'], safe='')}"
+        r = api.get(url, headers=hdr)
+        if r.status != 200:  # token 可能失效 → 續一次再試
+            ok, _, msg = api_renew_token(api)
+            if not ok:
+                return [], False, f"重取 token 失敗：{msg}"
+            url = f"{QUEUE_BASE}/GetEventTickets?eventIdNumber={EVENT_ID}&token={quote(_token['value'], safe='')}"
+            r = api.get(url, headers=hdr)
+        if r.status != 200:
+            return [], False, f"GetEventTickets HTTP {r.status}"
+        lst = r.json().get("eventTicketList", [])
+    except Exception as e:
+        return [], False, f"{type(e).__name__}: {e}"
+
+    avail = []
+    for t in lst:
+        st = t.get("ticketStatus")
+        sold = t.get("soldCount") or 0
+        total = t.get("ticketCount") or 0
+        if st in ("Expired", "SoldOut") or sold >= total:
             continue
-        if not val:
+        name = t.get("name", "")
+        md = re.search(r"2026/06/(\d{2})", name)
+        ms = re.search(r"\d{2}:\d{2}-\d{2}:\d{2}", name)
+        if not md or not ms:
             continue
-        days_ok += 1
-        avail = [r["name"] for r in sessions if not r["soldOut"]]
-        if not avail:
+        day = int(md.group(1))
+        if day not in GRAB_DAYS:
             continue
-        days_avail.append(day)
-        # 取第一個可報名場次的時段（從名稱抓 HH:MM-HH:MM）
-        m = re.search(r"\d{2}:\d{2}-\d{2}:\d{2}", avail[0])
-        sess = m.group(0) if m else avail[0]
-        label = label_for(day, sess)
-        print(f"[{now_str()}] 🟢 偵測到可報名：{label}（該日可報名：{avail}）")
-        # 先立刻通知（安全網）
-        post_discord(f"🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}")
-        if DRY_RUN:
-            post_discord(f"（DRY_RUN 測試模式：偵測到 {label}，不實際下單）")
-            return False
-        # 嘗試卡位
-        try:
-            ok, detail = attempt_grab(page, day, sess)
-        except Exception as e:
-            ok, detail = False, f"卡位流程例外：{type(e).__name__}: {e}"
-        if ok:
-            post_discord(f"✅ 已卡到位：{label}！\n10 分鐘內打開 Accupass（同一帳號）接續填資料送出。\n別自己另開新訂單，直接接這筆。\n{TICKET_URL}")
-            return True
-        else:
-            post_discord(f"⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}")
-            # 不 return，繼續看其他日期
-    # 每圈心跳：確認 bot 還活著、掃描沒壞、量得出一圈耗時（不再是黑箱）
+        avail.append({"name": name, "day": day, "sess": ms.group(0), "sold": sold, "total": total})
+    return avail, True, ""
+
+
+def run_once(page, api, cycle=0):
+    """用 API 掃一圈全部日期；偵測到可報名就先通知、再用瀏覽器嘗試卡位。
+    回傳 True=已成功卡到（要停）。"""
+    t0 = time.monotonic()
+    avail, ok, err = api_scan(api)
     dur = time.monotonic() - t0
-    summary = f"可報名日={days_avail}" if days_avail else "全部售完"
-    print(f"[{now_str()}] 第 {cycle} 圈完成｜讀到 {days_ok}/{len(GRAB_DAYS)} 天｜耗時 {dur:.0f}s｜{summary}")
+
+    if not ok:
+        print(f"[{now_str()}] 第 {cycle} 圈｜API 掃描失敗：{err}｜耗時 {dur:.1f}s")
+        return False
+    if not avail:
+        # 每圈心跳：確認還活著、量得出回訪速度（API 版一圈約 1~2 秒）
+        print(f"[{now_str()}] 第 {cycle} 圈完成｜API 掃 {DAYS_LABEL} 全場｜耗時 {dur:.1f}s｜全部售完")
+        return False
+
+    # 有可報名！先處理第一筆（通常一次只釋一兩個）
+    target = avail[0]
+    day, sess = target["day"], target["sess"]
+    label = label_for(day, sess)
+    print(f"[{now_str()}] 🟢 偵測到可報名：{label}（{target['sold']}/{target['total']}）｜本圈可報名：{[a['name'] for a in avail]}")
+    # 先立刻通知（安全網：就算自動卡位失敗，你也能馬上手動搶）
+    post_discord(f"🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}")
+    if DRY_RUN:
+        post_discord(f"（DRY_RUN 測試模式：偵測到 {label}，不實際下單）")
+        return False
+
+    # 用瀏覽器衝到報名頁卡位（這段在搶到時才跑一次）
+    try:
+        page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
+        page.wait_for_timeout(1500)
+        switch_to_day(page, day)
+        grabbed, detail = attempt_grab(page, day, sess)
+    except Exception as e:
+        grabbed, detail = False, f"卡位流程例外：{type(e).__name__}: {e}"
+    if grabbed:
+        post_discord(f"✅ 已卡到位：{label}！\n10 分鐘內打開 Accupass（同一帳號）接續填資料送出。\n別自己另開新訂單，直接接這筆。\n{TICKET_URL}")
+        return True
+    post_discord(f"⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}")
     return False
 
 
@@ -264,12 +342,14 @@ def main():
         print(f"找不到 {STATE_PATH}（登入狀態）。本機請先跑 export_login.py；雲端請設 ACCUPASS_STATE secret。")
         return 1
 
-    print(f"[{now_str()}] 自動卡位 bot 啟動｜顧 6/{GRAB_DAYS[0]}~6/{GRAB_DAYS[-1]} 全時段｜DRY_RUN={DRY_RUN}")
+    print(f"[{now_str()}] 自動卡位 bot 啟動｜API 偵測 {DAYS_LABEL} 全時段｜DRY_RUN={DRY_RUN}")
     deadline = time.monotonic() + LOOP_MAX_MINUTES * 60
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(storage_state=STATE_PATH, user_agent=UA, locale="zh-TW")
         page = ctx.new_page()
+        page.on("request", _on_queue_request)  # 攔 authorization 標頭給 API 用
+        api = ctx.request                       # 共用 cookie 的 HTTP client
 
         # 啟動先驗證登入（尤其雲端 IP 下 cookie 還有沒有效）
         try:
@@ -282,11 +362,20 @@ def main():
         except Exception as e:
             print(f"[{now_str()}] 登入檢查例外：{type(e).__name__}: {e}")
 
+        # 開票券頁攔下 authorization 標頭（API 偵測必需）
+        try:
+            got = capture_auth(page)
+            print(f"[{now_str()}] 攔截 API 授權標頭：{'成功✅' if got else '失敗⚠️'}")
+            if not got:
+                post_discord("⚠️ 自動卡位 bot：攔不到 API 授權標頭，無法用快速偵測。請通知我檢查。")
+        except Exception as e:
+            print(f"[{now_str()}] 攔截授權標頭例外：{type(e).__name__}: {e}")
+
         cycle = 0
         while True:
             cycle += 1
             try:
-                grabbed = run_once(page, cycle)
+                grabbed = run_once(page, api, cycle)
             except Exception as e:
                 print(f"[{now_str()}] 本圈例外：{type(e).__name__}: {e}")
                 grabbed = False

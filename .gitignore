@@ -8,3 +8,7 @@ venv/
 .env
 state.json
 *.state.json
+
+# 本機探測/除錯腳本與樣本（不需進 repo）
+probe_*.py
+sample_tickets.json

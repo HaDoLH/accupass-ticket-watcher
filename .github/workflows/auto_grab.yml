@@ -44,7 +44,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DRY_RUN: ${{ inputs.dry_run }}
-          # 縮到兩天後一圈約 12 秒；間隔壓到 3 秒 → 回訪約 15 秒，盡量追上秒搶
+          # API 偵測一圈約 0.5~1 秒（一次掃完所有日期）；間隔 3 秒 → 回訪約 4 秒
           LOOP_INTERVAL_SECONDS: "3"
           LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}
           # 關閉 Python 輸出緩衝：讓每圈 log 即時寫出，長跑中途被中止也不會整批遺失（方便診斷）
