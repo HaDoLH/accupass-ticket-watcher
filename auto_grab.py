@@ -41,9 +41,10 @@ TW_TZ = timezone(timedelta(hours=8))
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-# 要顧的日期（6/10~6/25）；每天全部時段任一釋出就搶
+# 要顧的日期；每天全部時段任一釋出就搶。
+# 縮到 6/13+6/14 兩天 → 回訪由 64 秒降到約 8~10 秒，才追得上秒搶釋出。
 TARGET_YEAR, TARGET_MONTH = 2026, 6
-GRAB_DAYS = list(range(10, 26))
+GRAB_DAYS = [13, 14]
 
 LOOP_INTERVAL_SECONDS = int(os.environ.get("LOOP_INTERVAL_SECONDS", "20") or "20")
 LOOP_MAX_MINUTES = int(os.environ.get("LOOP_MAX_MINUTES", "330") or "330")
