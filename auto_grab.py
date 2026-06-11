@@ -340,9 +340,13 @@ def run_once(page, api, cycle=0):
     # 只通知模式：叫你手動搶，bot 不下單
     if NOTIFY_ONLY:
         if first_time:
+            remain = (target["total"] or 0) - (target["sold"] or 0)
             post_discord(
-                f"@everyone\n🔔 {label} 釋出名額（{target['sold']}/{target['total']}）！\n"
-                f"快用手機/網頁手動搶（要同一個 FB 帳號登入），10 分鐘內完成 👉 {TICKET_URL}",
+                f"@everyone\n"
+                f"# 🔔 6/{day} {sess}\n"          # 大標題：一眼看到要選哪天哪場
+                f"**日曆就選這天這場！** 剩 {remain} 位\n"
+                f"開 Accupass（同 FB 帳號）→ 日曆選 **6/{day}** → 點這場 → 按「+」→ 立即報名\n"
+                f"⏱️ 10 分鐘內完成 👉 {TICKET_URL}",
                 ping=True)
         return False
 
