@@ -67,30 +67,28 @@ JS_READ_SESSIONS = """()=>{const out=[];document.querySelectorAll('p[class*=-nam
 
 # 針對某個「可報名」場次：在它的卡片裡按「+」把數量加到 1。回傳診斷資訊。
 JS_SET_QTY_ONE = """(sessTime)=>{
-  // 找到名稱含該時段、且「沒有售完」的票卡
   let nameEl=null;
   for(const n of document.querySelectorAll('p[class*=-name]')){
-    if(n.textContent.includes(sessTime) && !/sold-out/.test(n.className)){ nameEl=n; break; }
+    if(n.textContent.includes(sessTime)){ nameEl=n; break; }
   }
-  if(!nameEl) return {ok:false, why:'找不到該場次的可報名卡片'};
-  // 往上找票卡容器
-  let card=nameEl; for(let i=0;i<6;i++){ if(!card.parentElement)break; card=card.parentElement; if((card.className||'').includes('Ticket-a1a6c1e6')||card.querySelector('button')) break; }
-  // 卡片裡所有按鈕，找「+」（加號 / plus / 右邊那顆 stepper）
-  const btns=[...card.querySelectorAll('button')];
-  const info=btns.map(b=>({t:(b.textContent||'').trim(), cls:b.className, aria:b.getAttribute('aria-label')||''}));
-  let plus=btns.find(b=>(b.textContent||'').trim()==='+' || /plus|increase|add|inc\\b/i.test(b.className) || /加|增/.test(b.getAttribute('aria-label')||''));
-  if(!plus && btns.length){ plus=btns[btns.length-1]; }  // 退而求其次：最後一顆通常是「+」
-  if(!plus) return {ok:false, why:'卡片裡找不到任何按鈕', cardHtml: card.outerHTML.slice(0,1500)};
-  plus.click();
-  return {ok:true, clicked:{t:(plus.textContent||'').trim(), cls:plus.className}, buttons:info, cardHtml: card.outerHTML.slice(0,1500)};
+  if(!nameEl) return {ok:false, why:'找不到該場次卡片'};
+  // 往上找到「含 +/- 數量控制」的卡片容器
+  let card=nameEl;
+  for(let i=0;i<8;i++){ if(!card.parentElement)break; card=card.parentElement; if(card.querySelector('[class*=change-qty]')||card.querySelector('[class*=-add]'))break; }
+  // Accupass 的「+」是 span（class 含 -add），不是 button
+  const add=card.querySelector('[class*=change-qty] [class*=-add]')||card.querySelector('[class*=-add]');
+  if(!add) return {ok:false, why:'找不到加號(+)控制', cardHtml: card.outerHTML.slice(0,1500)};
+  add.click();
+  return {ok:true, clicked: add.className, cardHtml: card.outerHTML.slice(0,1200)};
 }"""
 
-# 讀目前數量（看 +1 有沒有生效）
+# 讀目前數量（看 +1 有沒有生效）：找卡片裡顯示「x數字」的那個 span
 JS_READ_QTY = """(sessTime)=>{
   for(const n of document.querySelectorAll('p[class*=-name]')){
     if(n.textContent.includes(sessTime)){
-      let card=n; for(let i=0;i<6;i++){ if(!card.parentElement)break; card=card.parentElement; }
-      const q=card.querySelector('[class*=qty]'); return q?q.textContent.trim():'(無qty元素)';
+      let card=n; for(let i=0;i<8;i++){ if(!card.parentElement)break; card=card.parentElement; if(card.querySelector('[class*=change-qty]'))break; }
+      const sp=[...card.querySelectorAll('span')].find(s=>/x\\s*\\d+/.test(s.textContent||''));
+      return sp?sp.textContent.trim():'(無qty元素)';
     }
   } return '(找不到場次)';
 }"""
@@ -164,14 +162,25 @@ def switch_to_day(page, day):
 def attempt_grab(page, day, sess):
     """偵測到 day 的 sess 可報名 → 嘗試衝到訂單頁卡位。回傳 (success, detail)。"""
     label = label_for(day, sess)
-    # 1) 設數量 1
-    r = page.evaluate(JS_SET_QTY_ONE, sess)
-    print(f"[{now_str()}] 卡位嘗試 {label}｜設數量結果：{json.dumps(r, ensure_ascii=False)[:600]}")
-    if not r.get("ok"):
-        return False, f"設數量失敗：{r.get('why')}"
-    page.wait_for_timeout(800)
+    # 1) 設數量 1：點該場次卡片裡的「+」。Accupass 的 +/- 是 span（非 button），用真實點擊最穩。
+    set_detail = ""
+    try:
+        name = page.locator("p[class*=-name]", has_text=sess).first
+        card = name.locator("xpath=ancestor::div[.//*[contains(@class,'change-qty')]][1]")
+        card.locator("[class*='change-qty'] [class*='-add']").first.click(timeout=5000)
+    except Exception as e:
+        set_detail = f"真實點+失敗（{type(e).__name__}）→ 改用 JS 後援"
+        try:
+            r = page.evaluate(JS_SET_QTY_ONE, sess)
+            if not r.get("ok"):
+                return False, f"設數量失敗：{r.get('why')}"
+        except Exception as e2:
+            return False, f"設數量例外：{type(e2).__name__}: {e2}"
+    page.wait_for_timeout(700)
     qty = page.evaluate(JS_READ_QTY, sess)
-    print(f"[{now_str()}] 目前數量顯示：{qty}")
+    print(f"[{now_str()}] 卡位嘗試 {label}｜數量顯示：{qty}｜{set_detail or '已點+'}")
+    if "x0" in (qty or "") or not re.search(r"x\s*[1-9]", qty or ""):
+        return False, f"數量沒加成功（顯示 {qty}）"
 
     # 2) 按底部「立即報名」
     clicked = False
