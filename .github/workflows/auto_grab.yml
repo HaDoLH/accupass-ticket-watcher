@@ -1,6 +1,10 @@
 name: Accupass 自動卡位
 
 on:
+  # 安全網：就算 PAT 接力鏈斷了，排程也會定時把 bot 重新叫醒（GitHub 排程會被降速，
+  # 但作為「復活」用途足夠；正常續命仍靠步驟末的 PAT 接力）。concurrency 確保不重複跑。
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
