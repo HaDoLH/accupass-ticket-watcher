@@ -188,7 +188,8 @@ def attempt_grab(page, day, sess):
     if "x0" in (qty or "") or not re.search(r"x\s*[1-9]", qty or ""):
         return False, f"數量沒加成功（顯示 {qty}）"
 
-    # 2) 按底部「立即報名」
+    # 2) 按底部「立即報名」。數量剛變 1，按鈕可能要一下才啟用 → 多等一點再點。
+    page.wait_for_timeout(600)
     clicked = False
     for sel in ["a:has-text('立即報名')", "button:has-text('立即報名')", "text=立即報名"]:
         try:
@@ -200,21 +201,28 @@ def attempt_grab(page, day, sess):
     if not clicked:
         return False, "找不到/點不到『立即報名』按鈕"
 
-    # 3) 等待頁面變化，判斷有沒有到「訂單頁/報名表」
-    page.wait_for_timeout(3500)
-    try:
-        page.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
+    # 3) 逐秒等頁面跳到訂單頁（最多 ~12 秒，跳頁稍慢也不誤判失敗）
+    def _is_order_page():
+        u = page.url
+        # 訂單頁特徵：URL 從 /eflow/ticket/<id> 變成 /eflow/<orderId>（不含 order/register 字樣）
+        if "/eflow/" in u and "/ticket/" not in u:
+            return True, u
+        try:
+            b = page.inner_text("body")[:2000]
+        except Exception:
+            b = ""
+        if any(w in b for w in ["報名資料", "填寫資料", "身分證", "參加者", "出生年月日", "未完成訂單將自動取消"]):
+            return True, u
+        return False, u
+
     url = page.url
-    body = page.inner_text("body")[:1500]
+    for _ in range(12):
+        page.wait_for_timeout(1000)
+        ok, url = _is_order_page()
+        if ok:
+            print(f"[{now_str()}] 卡位後 URL：{url}")
+            return True, f"已到訂單頁/報名表（url={url}）"
     print(f"[{now_str()}] 卡位後 URL：{url}")
-    # 訂單頁/報名表特徵：URL 變到 order/register，或出現姓名/身分證/報名資料等欄位字樣
-    order_signals = ["order", "register", "checkout"]
-    form_words = ["報名資料", "姓名", "身分證", "請填寫", "參加者", "聯絡"]
-    on_order = any(s in url for s in order_signals) or any(w in body for w in form_words)
-    if on_order:
-        return True, f"已到訂單頁/報名表（url={url}）"
     return False, f"按了立即報名但沒進到訂單頁（url={url}）"
 
 
