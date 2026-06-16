@@ -48,9 +48,9 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DRY_RUN: ${{ inputs.dry_run }}
-          # 只通知模式：偵測到釋出就 @everyone 叫人手動搶，bot 不下單、持續跑不停。
-          # （6/15 確認雲端登入仍有效；改回只通知是因為週末無法本機更新、且最穩定。）
-          NOTIFY_ONLY: "1"
+          # 自動卡位模式（測「我的訂單」交接）：偵測到就自動卡位；卡到也不停、設 12 分冷卻後繼續顧。
+          # 想改回「只通知不下單」把這行改成 "1"。
+          NOTIFY_ONLY: "0"
           # API 偵測一圈約 0.5~1 秒（一次掃完所有日期）；間隔 3 秒 → 回訪約 4 秒
           LOOP_INTERVAL_SECONDS: "3"
           LOOP_MAX_MINUTES: ${{ inputs.loop_minutes || '330' }}

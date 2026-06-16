@@ -247,6 +247,9 @@ _auth = {"header": None}
 _token = {"value": None, "exp": 0.0}
 # 已 @everyone 通知過的場次（同一場只 tag 一次，避免洗頻）
 _notified = set()
+# 卡到後冷卻：期間不再搶，給使用者時間去完成那筆訂單（比 10 分 hold 多一點，避免新訂單擠掉舊的）
+GRAB_COOLDOWN_SECONDS = 12 * 60
+_cooldown = {"until": 0.0}
 
 
 def _on_queue_request(req):
@@ -323,7 +326,7 @@ def api_scan(api):
 
 def run_once(page, api, cycle=0):
     """用 API 掃一圈全部日期；偵測到可報名就先通知、再用瀏覽器嘗試卡位。
-    回傳 True=已成功卡到（要停）。"""
+    一律回傳 False（卡到也不停止：設冷卻後繼續顧，給使用者時間接手完成）。"""
     t0 = time.monotonic()
     avail, ok, err = api_scan(api)
     dur = time.monotonic() - t0
@@ -358,6 +361,13 @@ def run_once(page, api, cycle=0):
                 ping=True)
         return False
 
+    # ── 自動卡位模式 ──
+    # 卡到後冷卻：給你時間去完成那筆，期間不再搶（免得新訂單把你正在填的擠掉）
+    if time.monotonic() < _cooldown["until"]:
+        mins = int((_cooldown["until"] - time.monotonic()) / 60) + 1
+        print(f"[{now_str()}] 偵測到 {label} 可報名，但卡位冷卻中（約 {mins} 分後恢復），本圈不搶")
+        return False
+
     # 先立刻通知（安全網：就算自動卡位失敗，你也能馬上手動搶）
     if first_time:
         post_discord(f"@everyone\n🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}", ping=True)
@@ -386,7 +396,9 @@ def run_once(page, api, cycle=0):
             f"② 或直接點這筆訂單連結 👉 {order_url}\n"
             f"⚠️ 別自己另開新報名，直接接這筆。",
             ping=True)
-        return True
+        # 不停止！設冷卻，給你 12 分鐘去接手完成；冷卻過了沒接成就繼續搶下一張
+        _cooldown["until"] = time.monotonic() + GRAB_COOLDOWN_SECONDS
+        return False
     if first_time:
         post_discord(f"@everyone\n⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}", ping=True)
     return False
@@ -431,18 +443,9 @@ def main():
         while True:
             cycle += 1
             try:
-                grabbed = run_once(page, api, cycle)
+                run_once(page, api, cycle)  # 卡到也不停（內部設冷卻），持續顧
             except Exception as e:
                 print(f"[{now_str()}] 本圈例外：{type(e).__name__}: {e}")
-                grabbed = False
-            if grabbed:
-                print(f"[{now_str()}] 已卡到位，停止。")
-                try:
-                    with open("grabbed.flag", "w") as f:
-                        f.write("1")  # 記號：已卡到，workflow 不要再接力下一棒
-                except Exception:
-                    pass
-                break
             if time.monotonic() + LOOP_INTERVAL_SECONDS >= deadline:
                 print(f"[{now_str()}] 達連續執行上限，本次結束（交給接力）。")
                 break
