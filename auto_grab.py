@@ -362,21 +362,29 @@ def run_once(page, api, cycle=0):
         return False
 
     # ── 自動卡位模式 ──
-    # 卡到後冷卻：給你時間去完成那筆，期間不再搶（免得新訂單把你正在填的擠掉）
-    if time.monotonic() < _cooldown["until"]:
-        mins = int((_cooldown["until"] - time.monotonic()) / 60) + 1
-        print(f"[{now_str()}] 偵測到 {label} 可報名，但卡位冷卻中（約 {mins} 分後恢復），本圈不搶")
-        return False
+    in_cooldown = time.monotonic() < _cooldown["until"]
 
-    # 先立刻通知（安全網：就算自動卡位失敗，你也能馬上手動搶）
+    # 一律先 @everyone 通知頻道所有人（同場只 tag 一次）→ 大家都能各自手動搶。
+    # 注意：通知「不受冷卻影響」，冷卻只暫停「bot 自己卡位」這個動作。
     if first_time:
-        post_discord(f"@everyone\n🔔 {label} 釋出名額！bot 嘗試自動卡位中…你也可同時手動搶 👉 {TICKET_URL}", ping=True)
+        remain = (target["total"] or 0) - (target["sold"] or 0)
+        tail = "（bot 剛卡到別張、冷卻中暫不重搶）" if in_cooldown else "（bot 也同步嘗試自動卡位）"
+        post_discord(
+            f"@everyone\n"
+            f"# 🔔 6/{day} {sess}\n"
+            f"**釋出名額！剩 {remain} 位，快手動搶**（同 FB 帳號，10 分鐘內）👉 {TICKET_URL}\n"
+            f"{tail}",
+            ping=True)
     if DRY_RUN:
-        if first_time:
-            post_discord(f"（DRY_RUN 測試模式：偵測到 {label}，不實際下單）")
         return False
 
-    # 用瀏覽器衝到報名頁卡位（這段在搶到時才跑一次）
+    # 冷卻中：保護你正在填的那筆，bot 本圈不自己搶（上面已通知大家手動搶）
+    if in_cooldown:
+        mins = int((_cooldown["until"] - time.monotonic()) / 60) + 1
+        print(f"[{now_str()}] 冷卻中（約 {mins} 分後恢復），本圈不自動卡位")
+        return False
+
+    # bot 用你的帳號嘗試卡位（卡到後由你在 App「繼續報名」接手）
     order_url = ""
     try:
         page.goto(TICKET_URL, wait_until="networkidle", timeout=60_000)
@@ -387,20 +395,15 @@ def run_once(page, api, cycle=0):
     except Exception as e:
         grabbed, detail = False, f"卡位流程例外：{type(e).__name__}: {e}"
     if grabbed:
-        # 卡到位最重要 → 一定 @everyone。給兩條接手路：我的訂單 + 直接訂單連結
         post_discord(
             f"@everyone\n"
             f"# ✅ 已卡到位：{label}\n"
-            f"**10 分鐘內完成**，兩條路擇一接手：\n"
-            f"① 打開 Accupass →「**我的訂單／報名紀錄**」→ 那筆未完成的 → 接著填送出\n"
-            f"② 或直接點這筆訂單連結 👉 {order_url}\n"
+            f"**（給 HaZel）10 分鐘內接手**：Accupass App →「票券 → 繼續報名」→ 點「接續報名」→ 填完送出\n"
+            f"或直接點這筆訂單連結 👉 {order_url}\n"
             f"⚠️ 別自己另開新報名，直接接這筆。",
             ping=True)
-        # 不停止！設冷卻，給你 12 分鐘去接手完成；冷卻過了沒接成就繼續搶下一張
+        # 不停止！設冷卻，給你 12 分鐘接手；冷卻只停 bot 自己搶、不影響通知，過了沒接成就繼續
         _cooldown["until"] = time.monotonic() + GRAB_COOLDOWN_SECONDS
-        return False
-    if first_time:
-        post_discord(f"@everyone\n⚠️ {label} 有票但自動卡位失敗（{detail}），快手動搶 👉 {TICKET_URL}", ping=True)
     return False
 
 
