@@ -250,6 +250,9 @@ _notified = set()
 # 卡到後冷卻：期間不再搶，給使用者時間去完成那筆訂單（比 10 分 hold 多一點，避免新訂單擠掉舊的）
 GRAB_COOLDOWN_SECONDS = 12 * 60
 _cooldown = {"until": 0.0}
+# 健康監測：API 連續失敗到此次數就 @everyone 警告（約 30 圈≈2 分鐘，避免短暫網路抖動誤報）
+HEALTH_ALERT_AFTER = 30
+_health = {"fail_streak": 0, "alerted": False}
 
 
 def _on_queue_request(req):
@@ -332,8 +335,21 @@ def run_once(page, api, cycle=0):
     dur = time.monotonic() - t0
 
     if not ok:
-        print(f"[{now_str()}] 第 {cycle} 圈｜API 掃描失敗：{err}｜耗時 {dur:.1f}s")
+        _health["fail_streak"] += 1
+        print(f"[{now_str()}] 第 {cycle} 圈｜API 掃描失敗（連續 {_health['fail_streak']}）：{err}｜耗時 {dur:.1f}s")
+        # 連續失敗夠多次 → @everyone 警告一次（可能登入失效/網站變動），不洗頻
+        if _health["fail_streak"] >= HEALTH_ALERT_AFTER and not _health["alerted"]:
+            _health["alerted"] = True
+            post_discord(
+                f"@everyone\n⚠️ 監票 bot 異常：API 偵測**連續失敗** {_health['fail_streak']} 次（{err}）。\n"
+                f"可能登入失效或網站改版，這段期間**收不到釋出通知**。請通知 HaZel 檢查。",
+                ping=True)
         return False
+    # 掃描成功 → 重置健康狀態；若先前曾警告過，回報已恢復
+    if _health["alerted"]:
+        post_discord("✅ 監票 bot 已恢復正常（API 偵測重新成功），繼續監看中。")
+    _health["fail_streak"] = 0
+    _health["alerted"] = False
     if not avail:
         # 每圈心跳：確認還活著、量得出回訪速度（API 版一圈約 1~2 秒）
         print(f"[{now_str()}] 第 {cycle} 圈完成｜API 掃 {DAYS_LABEL} 全場｜耗時 {dur:.1f}s｜全部售完")
